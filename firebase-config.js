@@ -23,4 +23,5 @@ window.APP_CONFIG = {
 
   // Google Drive API 附件上傳使用。必須是「Web application」OAuth Client ID。
   googleOAuthClientId: 'PASTE_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com'
+  superAdminEmail: "fc781117@gmail.com"
 };
