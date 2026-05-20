@@ -309,7 +309,7 @@ async function afterLogin(user, demo = false) {
   renderAll();
   applyRoleNavigation();
   showPage(isSystemAdmin() ? 'dashboard' : 'cases');
-  toast('登入成功，歡迎使用 V4 PDF 輸出修正版。', 'ok');
+  toast('登入成功，歡迎使用 V5 PDF 版面與統計視覺優化版。', 'ok');
 }
 
 async function logout() {
@@ -1252,8 +1252,7 @@ async function exportStatsPdf() {
   const c = getCase(reportCaseId);
   if (!c) return;
   const regs = registrationsFor(c.id);
-  const stats = buildStatsRows(regs, c);
-  await renderPdfPage({ title: `${c.title}｜統計報告`, agency: c.agencyName, serial: '統計輸出', rows: stats, note: '本統計排除外部單位之單位／職稱分析；外部報名案件不顯示單位與職稱欄位。', footer: `產出時間：${nowText()}`, filename: `${sanitizeFilename(c.title)}_統計報告.pdf`, signature: false });
+  await renderStatsVisualPdf({ c, regs, filename: `${sanitizeFilename(c.title)}_統計報告.pdf` });
 }
 
 function buildStatsRows(regs, c) {
@@ -1273,18 +1272,95 @@ function buildStatsRows(regs, c) {
 }
 
 function objText(obj) { return Object.entries(obj).map(([k,v]) => `${k}：${v}`).join('；'); }
+function htmlSafe(value) {
+  return safe(value).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
+}
+function sortedEntries(obj, limit = 99) {
+  return Object.entries(obj || {}).sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]), 'zh-Hant')).slice(0, limit);
+}
+function buildStatsObjects(regs, c) {
+  return {
+    gender: countBy(regs, r => r.formData?.gender || '未填'),
+    meals: countBy(regs, r => r.formData?.meal || '未填'),
+    parking: countBy(regs, r => r.formData?.parkingStatus?.startsWith('正取') ? '停車正取' : r.formData?.parkingStatus?.startsWith('候補') ? '停車候補' : '不需停車'),
+    age: countBy(regs, r => ageBucket(Number(r.formData?.age || 0), c)),
+    unit: c.audience === 'external' ? { '外部單位不列入統計': regs.length } : countBy(regs, r => r.formData?.unit || '未填'),
+    position: c.audience === 'external' ? { '外部人員不填寫職稱': regs.length } : countBy(regs, r => `${dutyText(r.formData?.dutyType) || '未填'}-${r.formData?.position || '未填'}`)
+  };
+}
+function svgPie(obj, colors = ['#b91c1c', '#ef4444', '#f97316', '#f59e0b', '#64748b', '#94a3b8']) {
+  const entries = sortedEntries(obj);
+  const total = entries.reduce((sum, [,v]) => sum + Number(v || 0), 0);
+  if (!total) return `<svg class="pie-svg" viewBox="0 0 160 160" aria-label="無資料"><circle cx="80" cy="80" r="58" fill="#f3f4f6"/><text x="80" y="86" text-anchor="middle" font-size="16" fill="#667085">無資料</text></svg>`;
+  let start = -90;
+  const parts = entries.map(([label, value], idx) => {
+    const angle = Number(value || 0) / total * 360;
+    const end = start + angle;
+    const large = angle > 180 ? 1 : 0;
+    const r = 62, cx = 80, cy = 80;
+    const sx = cx + r * Math.cos(Math.PI * start / 180);
+    const sy = cy + r * Math.sin(Math.PI * start / 180);
+    const ex = cx + r * Math.cos(Math.PI * end / 180);
+    const ey = cy + r * Math.sin(Math.PI * end / 180);
+    const d = `M ${cx} ${cy} L ${sx.toFixed(2)} ${sy.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${ex.toFixed(2)} ${ey.toFixed(2)} Z`;
+    start = end;
+    return `<path d="${d}" fill="${colors[idx % colors.length]}"><title>${htmlSafe(label)}：${value}</title></path>`;
+  }).join('');
+  return `<svg class="pie-svg" viewBox="0 0 160 160">${parts}<circle cx="80" cy="80" r="34" fill="#fff"/><text x="80" y="77" text-anchor="middle" font-size="14" fill="#475467" font-weight="700">合計</text><text x="80" y="96" text-anchor="middle" font-size="24" fill="#111827" font-weight="900">${total}</text></svg>`;
+}
+function legendHtml(obj, colors = ['#b91c1c', '#ef4444', '#f97316', '#f59e0b', '#64748b', '#94a3b8']) {
+  const total = Object.values(obj || {}).reduce((sum, v) => sum + Number(v || 0), 0) || 1;
+  return `<div class="pdf-legend">${sortedEntries(obj).map(([k, v], i) => `<div><span style="background:${colors[i % colors.length]}"></span><strong>${htmlSafe(k)}</strong><em>${v} 人｜${Math.round(Number(v || 0) / total * 100)}%</em></div>`).join('')}</div>`;
+}
+function barChartHtml(obj, limit = 8) {
+  const entries = sortedEntries(obj, limit);
+  const max = Math.max(1, ...entries.map(([,v]) => Number(v || 0)));
+  if (!entries.length) return '<div class="empty-chart">目前沒有資料</div>';
+  return `<div class="pdf-bar-chart">${entries.map(([k, v]) => `<div class="bar-row"><div class="bar-label">${htmlSafe(k)}</div><div class="bar-track"><div class="bar-fill" style="width:${Math.max(6, Math.round(Number(v || 0) / max * 100))}%"></div></div><div class="bar-value">${v} 人</div></div>`).join('')}</div>`;
+}
+function statCard(label, value, sub = '') {
+  return `<div class="pdf-stat-card"><span>${htmlSafe(value)}</span><strong>${htmlSafe(label)}</strong>${sub ? `<small>${htmlSafe(sub)}</small>` : ''}</div>`;
+}
 
 async function renderPdfPage({ title, agency, serial, rows, note, footer, filename, signature }) {
   const box = $('pdfCanvas');
-  box.innerHTML = `<div class="pdf-page"><div class="pdf-header"><div><small>${safe(agency)}</small><h1>${safe(title)}</h1></div><div class="serial-box"><div style="font-size:11px;opacity:.8">序號</div><div>${safe(serial)}</div></div></div><table class="pdf-table"><tbody>${rows.map(([k,v]) => `<tr><th>${safe(k)}</th><td>${safe(v)}</td></tr>`).join('')}</tbody></table><div class="notice mt-4">${safe(note)}</div>${signature ? `<div class="signature-grid"><div class="signature-line">報名人簽名</div><div class="signature-line">承辦人核章</div><div class="signature-line">單位主管批示</div></div>` : ''}<div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>${safe(footer)}</span></div></div>`;
-  await savePdfFromElement(box.firstElementChild, filename);
+  box.innerHTML = `<div class="pdf-page"><div class="pdf-header"><div><small>${htmlSafe(agency)}</small><h1>${htmlSafe(title)}</h1></div><div class="serial-box"><div style="font-size:11px;opacity:.8">序號</div><div>${htmlSafe(serial)}</div></div></div><table class="pdf-table"><tbody>${rows.map(([k,v]) => `<tr><th>${htmlSafe(k)}</th><td>${htmlSafe(v)}</td></tr>`).join('')}</tbody></table><div class="notice mt-4">${htmlSafe(note)}</div>${signature ? `<div class="signature-grid"><div class="signature-line">報名人簽名</div><div class="signature-line">承辦人核章</div><div class="signature-line">單位主管批示</div></div>` : ''}<div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>${htmlSafe(footer)}</span></div></div>`;
+  await savePdfFromElement(box.firstElementChild, filename, 'portrait');
 }
 
 async function renderListPdf({ agency, title, headers, rows, filename }) {
   const box = $('pdfCanvas');
-  const displayRows = rows.length ? rows : [['', '', '', '目前尚無報名資料', '', '']];
-  box.innerHTML = `<div class="pdf-page"><div class="pdf-header"><div><small>${safe(agency)}</small><h1>${safe(title)}</h1></div><div class="serial-box"><div>${todayISO()}</div></div></div><table class="pdf-table list-pdf-table"><thead><tr>${headers.map(h => `<th>${safe(h)}</th>`).join('')}</tr></thead><tbody>${displayRows.map(row => `<tr>${row.map(v => `<td style="height:38px">${safe(v)}</td>`).join('')}</tr>`).join('')}</tbody></table><div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>消防局多功能報名系統</span></div></div>`;
-  await savePdfFromElement(box.firstElementChild, filename);
+  const isMeal = headers.includes('餐食（葷素）');
+  const colgroup = isMeal
+    ? '<col style="width:52px"><col style="width:270px"><col style="width:105px"><col style="width:118px"><col style="width:86px"><col style="width:250px">'
+    : '<col style="width:52px"><col style="width:285px"><col style="width:110px"><col style="width:120px"><col style="width:160px"><col style="width:160px">';
+  const displayRows = rows.length ? rows : [headers.map((_, i) => i === 3 ? '目前尚無報名資料' : '')];
+  box.innerHTML = `<div class="pdf-page landscape list-pdf-page"><div class="pdf-header compact"><div><small>${htmlSafe(agency)}</small><h1>${htmlSafe(title)}</h1></div><div class="serial-box"><div>${todayISO()}</div></div></div><table class="pdf-table list-pdf-table"><colgroup>${colgroup}</colgroup><thead><tr>${headers.map((h, idx) => `<th class="${idx >= headers.length - 2 ? 'sign-head' : ''}">${htmlSafe(h)}</th>`).join('')}</tr></thead><tbody>${displayRows.map(row => `<tr>${row.map((v, idx) => `<td class="${idx >= row.length - 2 ? 'sign-cell' : ''}">${htmlSafe(v)}</td>`).join('')}</tr>`).join('')}</tbody></table><div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>消防局多功能報名系統</span></div></div>`;
+  await savePdfFromElement(box.firstElementChild, filename, 'landscape');
+}
+
+async function renderStatsVisualPdf({ c, regs, filename }) {
+  const box = $('pdfCanvas');
+  const stats = buildStatsObjects(regs, c);
+  const parkingRegular = stats.parking['停車正取'] || 0;
+  const parkingWait = stats.parking['停車候補'] || 0;
+  const meat = stats.meals['葷'] || 0;
+  const veg = stats.meals['素'] || 0;
+  const male = stats.gender['男'] || 0;
+  const female = stats.gender['女'] || 0;
+  box.innerHTML = `<div class="pdf-page stats-pdf-page"><div class="pdf-header"><div><small>${htmlSafe(c.agencyName)}</small><h1>${htmlSafe(c.title)}｜統計報告</h1></div><div class="serial-box"><div style="font-size:11px;opacity:.8">統計輸出</div><div>${todayISO()}</div></div></div>
+    <div class="pdf-stat-grid">${statCard('報名總人數', `${regs.length} 人`, `男 ${male}｜女 ${female}`)}${statCard('停車狀態', `${parkingRegular} 正取`, `候補 ${parkingWait}`)}${statCard('餐食需求', `${meat + veg} 份`, `葷 ${meat}｜素 ${veg}`)}${statCard('案件狀態', c.status === 'open' ? '開放中' : c.status === 'closed' ? '已截止' : '草稿', `截止日 ${c.deadline || '-'}`)}</div>
+    <div class="pdf-chart-grid">
+      <section class="pdf-chart-card"><h2>性別統計</h2><div class="pie-layout">${svgPie(stats.gender)}${legendHtml(stats.gender)}</div></section>
+      <section class="pdf-chart-card"><h2>餐食需求</h2><div class="pie-layout">${svgPie(stats.meals, ['#b91c1c','#16a34a','#94a3b8'])}${legendHtml(stats.meals, ['#b91c1c','#16a34a','#94a3b8'])}</div></section>
+      <section class="pdf-chart-card"><h2>停車需求</h2>${barChartHtml(stats.parking, 6)}</section>
+      <section class="pdf-chart-card"><h2>年齡區間</h2>${barChartHtml(stats.age, 10)}</section>
+      <section class="pdf-chart-card wide"><h2>單位統計</h2>${barChartHtml(stats.unit, 10)}</section>
+      <section class="pdf-chart-card wide"><h2>職稱統計</h2>${barChartHtml(stats.position, 10)}</section>
+    </div>
+    <div class="notice mt-4">本統計排除外部單位之單位／職稱分析；外部報名案件不顯示單位與職稱欄位。圖表僅依目前系統內報名資料即時產出。</div>
+    <div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>產出時間：${nowText()}</span></div></div>`;
+  await savePdfFromElement(box.firstElementChild, filename, 'portrait');
 }
 
 function waitFrame() {
@@ -1293,12 +1369,14 @@ function waitFrame() {
 
 function preparePdfCanvas() {
   const box = $('pdfCanvas');
+  const page = box.querySelector('.pdf-page');
+  const targetWidth = page?.classList.contains('landscape') ? '1123px' : '794px';
   box.classList.remove('hidden');
   box.style.display = 'block';
   box.style.position = 'fixed';
   box.style.left = '0';
   box.style.top = '0';
-  box.style.width = '794px';
+  box.style.width = targetWidth;
   box.style.opacity = '0';
   box.style.pointerEvents = 'none';
   box.style.zIndex = '-1';
@@ -1325,7 +1403,7 @@ function openPrintablePreview(el, filename) {
     return;
   }
   win.document.open();
-  win.document.write(`<!doctype html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${safe(filename)}</title><style>${css} body{background:#f3f4f6;margin:0;padding:20px}.pdf-page{margin:0 auto;box-shadow:0 16px 40px rgba(0,0,0,.18)}.print-actions{max-width:794px;margin:0 auto 16px;display:flex;gap:8px}.print-actions button{font-size:16px;padding:10px 14px;border-radius:10px;border:1px solid #d0d5dd;background:#fff}@media print{body{background:#fff;padding:0}.print-actions{display:none}.pdf-page{box-shadow:none;margin:0}}</style></head><body><div class="print-actions"><button onclick="window.print()">列印／另存 PDF</button><button onclick="window.close()">關閉</button></div>${el.outerHTML}</body></html>`);
+  win.document.write(`<!doctype html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${safe(filename)}</title><style>${css} body{background:#f3f4f6;margin:0;padding:20px}.pdf-page{margin:0 auto;box-shadow:0 16px 40px rgba(0,0,0,.18)}.print-actions{max-width:min(1123px,100%);margin:0 auto 16px;display:flex;gap:8px}.print-actions button{font-size:16px;padding:10px 14px;border-radius:10px;border:1px solid #d0d5dd;background:#fff}@media print{body{background:#fff;padding:0}.print-actions{display:none}.pdf-page{box-shadow:none;margin:0}}</style></head><body><div class="print-actions"><button onclick="window.print()">列印／另存 PDF</button><button onclick="window.close()">關閉</button></div>${el.outerHTML}</body></html>`);
   win.document.close();
   toast('已開啟 PDF 預覽頁，可使用瀏覽器列印／另存 PDF。', 'ok');
 }
@@ -1345,7 +1423,7 @@ function downloadOrPreviewPdf(pdf, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-async function savePdfFromElement(el, filename) {
+async function savePdfFromElement(el, filename, orientation = 'portrait') {
   if (!el) return toast('PDF 內容尚未建立，請重新操作一次。', 'danger');
   const box = preparePdfCanvas();
   try {
@@ -1370,7 +1448,7 @@ async function savePdfFromElement(el, filename) {
     });
     if (!canvas.width || !canvas.height) throw new Error('PDF 轉圖失敗，已改用預覽模式。');
     const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pdf = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
     const pageW = pdf.internal.pageSize.getWidth();
     const pageH = pdf.internal.pageSize.getHeight();
     const imgW = pageW;
