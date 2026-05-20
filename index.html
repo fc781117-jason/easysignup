@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>消防局多功能報名系統 V1</title>
-  <link rel="stylesheet" href="./styles.css" />
-  <script src="./firebase-config.js"></script>
+  <title>消防局多功能報名系統 V3</title>
+  <link rel="stylesheet" href="./styles.css?v=3.0.0" />
+  <script src="./firebase-config.js?v=3.0.0"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -19,7 +19,7 @@
     <div class="login-card">
       <div class="brand-mark">🚒</div>
       <h1>消防局多功能報名系統</h1>
-      <p class="subtitle">Fire Department Registration Platform｜V1</p>
+      <p class="subtitle">Fire Department Registration Platform｜V3.0 欄位與案件管理優化版</p>
       <div class="feature-list">
         <div>✅ 承辦人自建案件與表單</div>
         <div>✅ 內部 / 外部報名模板分流</div>
@@ -38,8 +38,8 @@
       <div class="side-brand">
         <span class="brand-icon">🚒</span>
         <div>
-          <strong>報名系統 V1</strong>
-          <small>Firebase / Drive Ready</small>
+          <strong>報名系統 V3</strong>
+          <small>Firebase / Drive Ready｜V3.0</small>
         </div>
       </div>
       <div class="user-card">
@@ -50,12 +50,10 @@
         </div>
       </div>
       <nav>
-        <button class="nav-item active" data-page="dashboard">📊 儀表板</button>
+        <button class="nav-item active" data-page="dashboard" data-role="admin">📊 儀表板</button>
         <button class="nav-item" data-page="cases">📋 案件管理</button>
-        <button class="nav-item" data-page="caseEditor">➕ 新增 / 編輯案件</button>
         <button class="nav-item" data-page="registration">✏️ 報名填寫</button>
-        <button class="nav-item" data-page="reports">📑 名冊與統計輸出</button>
-        <button class="nav-item" data-page="settings">⚙️ 系統設定</button>
+        <button class="nav-item" data-page="settings" data-role="admin">⚙️ 系統設定</button>
       </nav>
       <button id="logoutBtn" class="logout">🚪 登出</button>
     </aside>
@@ -91,7 +89,7 @@
         <div class="page-head">
           <div>
             <h2>📋 案件管理</h2>
-            <p>管理訓練、講習、會議、甄選等報名案件。</p>
+            <p>管理訓練、講習、會議、甄選等報名案件；建立案件、編輯與刪除皆整合於此。</p>
           </div>
           <button class="btn btn-primary" data-jump="caseEditor">＋ 新增案件</button>
         </div>
@@ -112,8 +110,8 @@
       <section id="caseEditor" class="page">
         <div class="page-head">
           <div>
-            <h2>➕ 新增 / 編輯案件</h2>
-            <p>承辦人填寫機關名稱、案件標題、內外部模板、停車位、年齡區間與附件限制。</p>
+            <h2>🧾 案件設定</h2>
+            <p>從案件管理進入新增或編輯；承辦人可設定模板欄位、停車位、年齡區間、附件與 PDF 注意事項。</p>
           </div>
           <div class="actions">
             <button id="resetCaseBtn" class="btn btn-outline">清空重填</button>
@@ -166,9 +164,29 @@
           </div>
 
           <div class="card form-card">
-            <h3>固定欄位設定</h3>
-            <p class="muted small">第一版採固定模板，減少承辦人設定錯誤；後續可擴充拖拉式欄位。</p>
+            <h3>欄位設定</h3>
+            <p class="muted small">提供固定模板欄位，如承辦人有其他需求，可自行點選取消或新增擴充。粉紅色代表啟用，灰色代表不使用；點 ▾ 可編輯選項。</p>
             <div id="templatePreview" class="template-preview"></div>
+            <div class="custom-field-box mt-4">
+              <h3>新增欄位</h3>
+              <div class="grid two compact">
+                <label>欄位名稱<input id="newFieldLabel" placeholder="例如：身份證字號、證照號碼" /></label>
+                <label>欄位類型
+                  <select id="newFieldType">
+                    <option value="text">文字</option>
+                    <option value="textarea">長文字</option>
+                    <option value="number">數字</option>
+                    <option value="date">日期</option>
+                    <option value="select">下拉選單</option>
+                    <option value="radio">單選</option>
+                    <option value="checkbox">多選</option>
+                  </select>
+                </label>
+              </div>
+              <label class="inline-check"><input id="newFieldRequired" type="checkbox" /> 設為必填</label>
+              <button id="addCustomFieldBtn" class="btn btn-secondary wide" type="button">＋ 新增自訂欄位</button>
+              <div id="customFieldList" class="custom-field-list"></div>
+            </div>
             <h3 class="mt-4">PDF 注意事項</h3>
             <textarea id="caseNote" rows="5">請報名人確認資料正確。若需取消或補件，請於截止日前洽承辦人。</textarea>
           </div>
@@ -227,8 +245,8 @@
       <section id="reports" class="page">
         <div class="page-head">
           <div>
-            <h2>📑 名冊與統計輸出</h2>
-            <p>輸出正式報名表 PDF、報名名冊 Excel、簽到表與餐食簽收表。</p>
+            <h2>📂 單一案件管理</h2>
+            <p>僅案件承辦人與最高系統管理員可進入，處理案件狀態、編輯、刪除、名冊、統計與輸出。</p>
           </div>
           <select id="reportCaseSelect"></select>
         </div>
@@ -249,6 +267,11 @@
             </div>
           </div>
           <div class="card form-card">
+            <h3>案件處置</h3>
+            <button id="editCaseFromReportsBtn" class="btn btn-secondary wide" type="button">編輯本案件設定</button>
+            <button id="toggleCaseStatusBtn" class="btn btn-outline wide mt-2" type="button">切換案件開放／截止</button>
+            <button id="deleteCaseBtn" class="btn btn-danger wide mt-2" type="button">刪除本案件</button>
+            <hr />
             <h3>輸出檔案</h3>
             <button id="exportExcelBtn" class="btn btn-primary wide">匯出 Excel 名冊</button>
             <button id="exportRosterPdfBtn" class="btn btn-secondary wide mt-2">匯出 PDF 簽到表</button>
@@ -290,6 +313,6 @@
 
   <div id="pdfCanvas" class="pdf-canvas hidden"></div>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=3.0.0"></script>
 </body>
 </html>

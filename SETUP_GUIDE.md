@@ -1,4 +1,4 @@
-# 消防局多功能報名系統 V1｜平台建置操作手冊
+# 消防局多功能報名系統 V3｜平台建置操作手冊
 
 ## 你需要記錄的資料清單
 
@@ -21,7 +21,7 @@
 1. 打開 GitHub。
 2. 右上角按 `+`。
 3. 選 `New repository`。
-4. Repository name 建議填：`fire-registration-app-v1`。
+4. Repository name 建議填：`fire-registration-app-v3`。
 5. Visibility 可選 `Private`。
 6. 按 `Create repository`。
 7. 進入 repo 後，點 `uploading an existing file`。
@@ -34,7 +34,7 @@
    - `apps-script-upload.js`
    - `README.md`
    - `SETUP_GUIDE.md`
-9. 下方 Commit message 可填：`init fire registration app v1`。
+9. 下方 Commit message 可填：`init fire registration app v2`。
 10. 按 `Commit changes`。
 
 ---
@@ -43,7 +43,7 @@
 
 1. 打開 Firebase Console。
 2. 按 `Add project` 或 `新增專案`。
-3. 專案名稱建議：`fire-registration-app-v1`。
+3. 專案名稱建議：`fire-registration-app-v3`。
 4. Google Analytics 可先關閉，因為第一版不需要。
 5. 按 `Create project`。
 6. 專案建立後，進入 Project Overview。
@@ -150,14 +150,14 @@
 2. 用 GitHub 帳號登入。
 3. 右上角按 `Add New...`。
 4. 選 `Project`。
-5. 在 Import Git Repository 找到 `fire-registration-app-v1`。
+5. 在 Import Git Repository 找到 `fire-registration-app-v3`。
 6. 按 `Import`。
 7. Framework Preset 選 `Other` 或保持 Auto Detect。
 8. Build Command 留空。
 9. Output Directory 留空。
 10. 按 `Deploy`。
 11. 部署完成後，複製 Vercel 網址，例如：
-    `https://fire-registration-app-v1.vercel.app`
+    `https://fire-registration-app-v3.vercel.app`
 
 ### 6-1 把 Vercel 網址加入 Firebase Authorized Domains
 
@@ -167,7 +167,7 @@
 4. 找到 `Authorized domains`。
 5. 按 `Add domain`。
 6. 貼上你的 Vercel 網域，不要含 `https://`，例如：
-   `fire-registration-app-v1.vercel.app`
+   `fire-registration-app-v3.vercel.app`
 7. Save。
 
 ### 6-2 把 Vercel 網址加入 Google OAuth Origins
@@ -178,7 +178,7 @@
 4. 點剛剛建立的 OAuth Client。
 5. 在 Authorized JavaScript origins 按 `Add URI`。
 6. 貼上完整網址，例如：
-   `https://fire-registration-app-v1.vercel.app`
+   `https://fire-registration-app-v3.vercel.app`
 7. 按 `Save`。
 
 ---

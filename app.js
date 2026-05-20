@@ -24,7 +24,7 @@ import {
 
 const CONFIG = window.APP_CONFIG || {};
 const ADMIN_EMAIL = CONFIG.systemAdminEmail || 'fc781117@gmail.com';
-const STORAGE_KEY = 'fire-registration-app-v1';
+const STORAGE_KEY = 'fire-registration-app-v3';
 
 const OUTSIDE_PLACEHOLDER = '外部單位不列入統計';
 const FIELD = {
@@ -60,6 +60,24 @@ const POSITIONS = {
 
 const CASE_TYPES = ['訓練報名','講習報名','會議報名','甄選報名'];
 
+const FIXED_FIELD_DEFS = [
+  { key:'applicantName', label:'姓名', type:'text', locked:true, required:true },
+  { key:'phone', label:'電話', type:'text', required:true },
+  { key:'email', label:'電子郵件', type:'email' },
+  { key:'gender', label:'性別（男／女）', type:'select', options:['男','女'], required:true },
+  { key:'age', label:'年齡', type:'number', required:true },
+  { key:'unitGroup', label:'單位類型', type:'select', options:['外勤單位','內勤科室'], internalOnly:true, required:true },
+  { key:'unit', label:'單位', type:'select', internalOnly:true, required:true },
+  { key:'subUnit', label:'分隊／科室', type:'text', internalOnly:true },
+  { key:'dutyType', label:'內外勤', type:'select', options:['外勤','內勤'], internalOnly:true, required:true },
+  { key:'position', label:'職稱', type:'select', internalOnly:true, required:true },
+  { key:'parkingNeed', label:'停車需求', type:'select', options:['不需要停車','需要停車'] },
+  { key:'meal', label:'餐食（葷／素）', type:'select', options:['葷','素','不需餐食'] },
+  { key:'note', label:'備註', type:'textarea', full:true }
+];
+const OPTION_FIELD_TYPES = new Set(['select','radio','checkbox']);
+
+
 let firebaseApp = null;
 let auth = null;
 let db = null;
@@ -73,6 +91,11 @@ let selectedCaseId = '';
 let reportCaseId = '';
 let dashboardChart = null;
 let reportCharts = [];
+let editingCaseId = '';
+let editorFieldSettings = {};
+let editorCustomFields = [];
+let expandedFieldId = '';
+let registrationEditingId = '';
 
 const $ = (id) => document.getElementById(id);
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -80,6 +103,73 @@ const nowText = () => new Date().toLocaleString('zh-TW', { hour12: false });
 const safe = (value, fallback = '') => value === undefined || value === null ? fallback : String(value);
 const randomId = (len = 6) => Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, len).padEnd(len, 'X');
 const sanitizeFilename = (name) => safe(name).replace(/[\\/:*?"<>|]/g, '_');
+
+function isSystemAdmin() {
+  return currentUser?.email === ADMIN_EMAIL || currentUser?.role === 'systemAdmin';
+}
+function canManageCase(c) {
+  if (!c || !currentUser) return false;
+  return isSystemAdmin() || c.createdBy === currentUser.uid || c.createdByEmail === currentUser.email;
+}
+function visibleFixedFieldDefs(audience) {
+  return FIXED_FIELD_DEFS.filter(f => audience === 'internal' || !f.internalOnly);
+}
+function defaultFieldSettings(audience = 'internal') {
+  const obj = {};
+  FIXED_FIELD_DEFS.forEach(f => {
+    obj[f.key] = {
+      active: audience === 'internal' || !f.internalOnly,
+      label: f.label,
+      type: f.type,
+      required: Boolean(f.required),
+      locked: Boolean(f.locked),
+      options: Array.isArray(f.options) ? [...f.options] : []
+    };
+  });
+  return obj;
+}
+function normalizeFieldSettings(settings = {}, audience = 'internal') {
+  const base = defaultFieldSettings(audience);
+  FIXED_FIELD_DEFS.forEach(f => {
+    const existing = settings?.[f.key] || {};
+    base[f.key] = {
+      ...base[f.key],
+      ...existing,
+      locked: Boolean(f.locked),
+      label: f.label,
+      type: f.type,
+      options: Array.isArray(existing.options) && existing.options.length ? existing.options : base[f.key].options
+    };
+    if (audience === 'external' && f.internalOnly) base[f.key].active = false;
+    if (f.locked) base[f.key].active = true;
+  });
+  return base;
+}
+function normalizeCustomFields(fields = []) {
+  return (Array.isArray(fields) ? fields : []).map(f => ({
+    id: f.id || ('custom_' + randomId(8)),
+    label: f.label || '自訂欄位',
+    type: f.type || 'text',
+    required: Boolean(f.required),
+    active: f.active !== false,
+    options: Array.isArray(f.options) && f.options.length ? f.options : ['選項1','選項2']
+  }));
+}
+function activeFixedKeys(c) {
+  const settings = normalizeFieldSettings(c.fieldSettings, c.audience);
+  return visibleFixedFieldDefs(c.audience).filter(f => settings[f.key]?.active !== false).map(f => f.key);
+}
+function ownRegistrationFor(caseId) {
+  if (!currentUser) return null;
+  return registrations.find(r => r.caseId === caseId && (r.createdBy === currentUser.uid || r.createdByEmail === currentUser.email || r.applicantEmail === currentUser.email));
+}
+function optionListForFixed(key, c) {
+  const settings = normalizeFieldSettings(c.fieldSettings, c.audience);
+  return settings[key]?.options || [];
+}
+function formOptionValues(name) {
+  return Array.from(document.querySelectorAll(`[name="${name}"]:checked`)).map(el => el.value);
+}
 
 function validFirebaseConfig() {
   const cfg = CONFIG.firebaseConfig || {};
@@ -118,10 +208,13 @@ async function init() {
     usingDemoMode = true;
   }
 
+  editorFieldSettings = defaultFieldSettings($('caseAudience').value || 'internal');
+  editorCustomFields = [];
   wireEvents();
   renderTemplatePreview();
   renderPositionRules();
   renderEnvStatus();
+  applyRoleNavigation();
 }
 
 function makeUser(user) {
@@ -151,9 +244,10 @@ function wireEvents() {
   document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => showPage(btn.dataset.page)));
   document.querySelectorAll('[data-jump]').forEach(btn => btn.addEventListener('click', () => showPage(btn.dataset.jump)));
 
-  $('caseAudience').addEventListener('change', renderTemplatePreview);
+  $('caseAudience').addEventListener('change', () => { editorFieldSettings = normalizeFieldSettings(editorFieldSettings, $('caseAudience').value); renderTemplatePreview(); });
   $('caseAgeBucketMode').addEventListener('change', () => $('customAgeWrap').classList.toggle('hidden', $('caseAgeBucketMode').value !== 'custom'));
   $('resetCaseBtn').addEventListener('click', resetCaseEditor);
+  $('addCustomFieldBtn').addEventListener('click', addCustomFieldFromEditor);
   $('saveDraftBtn').addEventListener('click', () => saveCase('draft'));
   $('publishCaseBtn').addEventListener('click', () => saveCase('open'));
   $('caseSearch').addEventListener('input', renderCasesTable);
@@ -171,6 +265,9 @@ function wireEvents() {
   $('attachmentInput').addEventListener('change', renderAttachmentInfo);
   $('connectDriveBtn').addEventListener('click', requestDriveAccess);
 
+  $('editCaseFromReportsBtn').addEventListener('click', () => loadCaseForEdit(reportCaseId));
+  $('toggleCaseStatusBtn').addEventListener('click', toggleReportCaseStatus);
+  $('deleteCaseBtn').addEventListener('click', () => deleteCaseById(reportCaseId));
   $('exportExcelBtn').addEventListener('click', exportExcelWorkbook);
   $('exportRosterPdfBtn').addEventListener('click', () => exportSimplePdf('signIn'));
   $('exportMealPdfBtn').addEventListener('click', () => exportSimplePdf('meal'));
@@ -210,7 +307,9 @@ async function afterLogin(user, demo = false) {
   await ensureUserProfile(user);
   await loadAllData();
   renderAll();
-  toast('登入成功，歡迎使用。', 'ok');
+  applyRoleNavigation();
+  showPage(isSystemAdmin() ? 'dashboard' : 'cases');
+  toast('登入成功，歡迎使用 V3 欄位與案件管理優化版。', 'ok');
 }
 
 async function logout() {
@@ -240,10 +339,25 @@ async function ensureUserProfile(user) {
 }
 
 function showPage(page) {
+  if (!isSystemAdmin() && (page === 'dashboard' || page === 'settings')) page = 'cases';
+  if (page === 'reports') {
+    const c = getCase(reportCaseId);
+    if (c && !canManageCase(c)) {
+      toast('您只能管理自己建立的案件；可查看案件並填寫／重新編輯自己的資料。', 'warn');
+      page = 'cases';
+    }
+  }
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === page));
   document.querySelectorAll('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.page === page));
   if (page === 'reports') renderReports();
   if (page === 'dashboard') renderDashboard();
+}
+
+function applyRoleNavigation() {
+  document.querySelectorAll('.nav-item').forEach(btn => {
+    const adminOnly = btn.dataset.role === 'admin';
+    btn.classList.toggle('hidden', adminOnly && !isSystemAdmin());
+  });
 }
 
 function renderAll() {
@@ -253,6 +367,7 @@ function renderAll() {
   renderRegistrationForm();
   renderReports();
   renderEnvStatus();
+  applyRoleNavigation();
 }
 
 async function loadAllData() {
@@ -304,6 +419,8 @@ function caseBase(status) {
     driveFolderName: $('driveFolderName').value.trim() || '消防局報名系統附件',
     serialPrefix: $('serialPrefix').value.trim() || CONFIG.defaultSerialPrefix || 'NTP-FIRE',
     caseCode,
+    fieldSettings: normalizeFieldSettings(editorFieldSettings, audience),
+    customFields: normalizeCustomFields(editorCustomFields),
     createdBy: currentUser?.uid || 'demo-admin',
     createdByEmail: currentUser?.email || ADMIN_EMAIL,
     createdByName: currentUser?.name || '',
@@ -322,9 +439,23 @@ function typeToCode(type) {
 async function saveCase(status) {
   try {
     const payload = caseBase(status);
-    if (usingFirebase && db) {
+    if (editingCaseId) {
+      const existing = getCase(editingCaseId);
+      if (!canManageCase(existing)) throw new Error('您沒有權限編輯此案件。');
+      const updatePayload = { ...payload, createdBy: existing.createdBy || payload.createdBy, createdByEmail: existing.createdByEmail || payload.createdByEmail, createdByName: existing.createdByName || payload.createdByName };
+      if (usingFirebase && db) {
+        await updateDoc(doc(db, 'cases', editingCaseId), { ...updatePayload, updatedAt: serverTimestamp() });
+      } else {
+        const store = loadStore();
+        store.cases = (store.cases || []).map(c => c.id === editingCaseId ? { ...c, ...updatePayload } : c);
+        saveStore(store);
+        cases = store.cases;
+      }
+      toast('案件設定已更新。', 'ok');
+    } else if (usingFirebase && db) {
       const docRef = await addDoc(collection(db, 'cases'), { ...payload, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
       cases.unshift({ id: docRef.id, ...payload });
+      toast(status === 'open' ? '案件已發布。' : '草稿已儲存。', 'ok');
     } else {
       const store = loadStore();
       store.cases = store.cases || [];
@@ -332,8 +463,8 @@ async function saveCase(status) {
       store.cases.unshift({ id, ...payload, createdAtMillis: Date.now() });
       saveStore(store);
       cases = store.cases;
+      toast(status === 'open' ? '案件已發布。' : '草稿已儲存。', 'ok');
     }
-    toast(status === 'open' ? '案件已發布。' : '草稿已儲存。', 'ok');
     resetCaseEditor(false);
     await loadAllData();
     renderAll();
@@ -344,6 +475,12 @@ async function saveCase(status) {
 }
 
 function resetCaseEditor(show = true) {
+  editingCaseId = '';
+  expandedFieldId = '';
+  editorFieldSettings = defaultFieldSettings('internal');
+  editorCustomFields = [];
+  $('saveDraftBtn').textContent = '儲存草稿';
+  $('publishCaseBtn').textContent = '發布案件';
   $('caseAgency').value = CONFIG.defaultAgencyName || '新北市政府消防局';
   $('caseTitle').value = '';
   $('caseType').value = '訓練報名';
@@ -365,13 +502,197 @@ function resetCaseEditor(show = true) {
   if (show) toast('已清空案件編輯區。');
 }
 
+function loadCaseForEdit(caseId) {
+  const c = getCase(caseId);
+  if (!c) return toast('找不到案件。', 'danger');
+  if (!canManageCase(c)) return toast('您只能編輯自己建立的案件。', 'warn');
+  editingCaseId = c.id;
+  expandedFieldId = '';
+  $('caseAgency').value = c.agencyName || CONFIG.defaultAgencyName || '新北市政府消防局';
+  $('caseTitle').value = c.title || '';
+  $('caseType').value = c.type || '訓練報名';
+  $('caseAudience').value = c.audience || 'internal';
+  $('caseDeadline').value = c.deadline || todayISO();
+  $('caseQuota').value = c.quota || 0;
+  $('caseParkingSlots').value = c.parkingSlots || 0;
+  $('caseAttachmentLimit').value = c.attachmentLimitMB || 10;
+  $('caseAttachmentMode').value = c.attachmentMode || 'none';
+  $('caseAgeBucketMode').value = c.ageBucketMode || 'five';
+  $('customAgeWrap').classList.toggle('hidden', $('caseAgeBucketMode').value !== 'custom');
+  $('caseCustomAgeBuckets').value = c.customAgeBuckets || '';
+  $('caseNote').value = c.note || '請報名人確認資料正確。若需取消或補件，請於截止日前洽承辦人。';
+  $('uploadMode').value = c.uploadMode || 'appsScript';
+  $('uploadEndpoint').value = c.uploadEndpoint || '';
+  $('driveFolderName').value = c.driveFolderName || '消防局報名系統附件';
+  $('serialPrefix').value = c.serialPrefix || CONFIG.defaultSerialPrefix || 'NTP-FIRE';
+  $('caseCode').value = c.caseCode || typeToCode(c.type || '訓練報名');
+  editorFieldSettings = normalizeFieldSettings(c.fieldSettings, c.audience || 'internal');
+  editorCustomFields = normalizeCustomFields(c.customFields);
+  $('saveDraftBtn').textContent = '更新為草稿';
+  $('publishCaseBtn').textContent = '更新並發布';
+  renderTemplatePreview();
+  showPage('caseEditor');
+  toast('已載入案件設定，可直接修改後更新。', 'ok');
+}
+
+async function toggleReportCaseStatus() {
+  const c = getCase(reportCaseId);
+  if (!c || !canManageCase(c)) return toast('您沒有權限管理此案件。', 'warn');
+  const nextStatus = c.status === 'open' ? 'closed' : 'open';
+  await updateCasePartial(c.id, { status: nextStatus, updatedAtMillis: Date.now() });
+  toast(`案件狀態已改為：${statusText(nextStatus)}`, 'ok');
+  await loadAllData();
+  renderAll();
+  reportCaseId = c.id;
+  showPage('reports');
+}
+
+async function updateCasePartial(caseId, patch) {
+  if (usingFirebase && db) await updateDoc(doc(db, 'cases', caseId), { ...patch, updatedAt: serverTimestamp() });
+  else {
+    const store = loadStore();
+    store.cases = (store.cases || []).map(c => c.id === caseId ? { ...c, ...patch } : c);
+    saveStore(store);
+    cases = store.cases;
+  }
+}
+
+async function deleteCaseById(caseId) {
+  const c = getCase(caseId);
+  if (!c || !canManageCase(c)) return toast('您沒有權限刪除此案件。', 'warn');
+  const ok = confirm(`確定要刪除「${c.title}」？\n此動作會一併移除本機／資料庫中的該案件報名資料，請先匯出備份。`);
+  if (!ok) return;
+  if (usingFirebase && db) {
+    await deleteDoc(doc(db, 'cases', caseId));
+    const regSnap = await getDocs(query(collection(db, 'registrations'), where('caseId', '==', caseId)));
+    await Promise.all(regSnap.docs.map(d => deleteDoc(doc(db, 'registrations', d.id))));
+  } else {
+    const store = loadStore();
+    store.cases = (store.cases || []).filter(c => c.id !== caseId);
+    store.registrations = (store.registrations || []).filter(r => r.caseId !== caseId);
+    saveStore(store);
+  }
+  reportCaseId = '';
+  selectedCaseId = '';
+  await loadAllData();
+  renderAll();
+  showPage('cases');
+  toast('案件已刪除。', 'ok');
+}
+
 function renderTemplatePreview() {
   const audience = $('caseAudience').value;
-  const fields = audience === 'internal'
-    ? ['姓名','電話','電子郵件','性別（男／女）','年齡','單位類型','單位','分隊／科室','內外勤','職稱','停車需求','餐食（葷／素）','備註']
-    : ['姓名','電話','電子郵件','性別（男／女）','年齡','停車需求','餐食（葷／素）','備註'];
-  $('templatePreview').innerHTML = `<div class="pill-row">${fields.map(f => `<span class="pill">${f}</span>`).join('')}</div>` +
-    `<div class="notice mt-3 ${audience === 'external' ? 'warn' : ''}">${audience === 'external' ? '外部報名模板會隱藏「單位」與「職稱」，且不列入單位／職稱統計。' : '內部報名模板會依內勤／外勤顯示不同職稱選項，並列入單位與職稱統計。'}</div>`;
+  editorFieldSettings = normalizeFieldSettings(editorFieldSettings, audience);
+  const fixedCards = visibleFixedFieldDefs(audience).map(def => renderFieldSettingCard(def, editorFieldSettings[def.key], 'fixed')).join('');
+  $('templatePreview').innerHTML = `<div class="field-setting-list">${fixedCards}</div>` +
+    `<div class="notice mt-3 ${audience === 'external' ? 'warn' : ''}">${audience === 'external' ? '外部報名模板會自動隱藏「單位」與「職稱」，且不列入單位／職稱統計。' : '內部報名模板會依內勤／外勤顯示不同職稱選項，並列入單位與職稱統計。'}</div>`;
+  $('customFieldList').innerHTML = renderCustomFieldList();
+  bindFieldSettingEvents();
+}
+
+function renderFieldSettingCard(def, setting, source) {
+  const id = source === 'fixed' ? def.key : def.id;
+  const active = setting?.active !== false;
+  const expandable = OPTION_FIELD_TYPES.has(def.type) || source === 'custom';
+  const isExpanded = expandedFieldId === `${source}:${id}`;
+  const options = Array.isArray(setting?.options) ? setting.options : [];
+  const optionEditor = isExpanded ? renderOptionEditor(source, id, def.type, options, setting) : '';
+  return `<div class="field-setting-card ${active ? 'active' : 'inactive'}" data-field-source="${source}" data-field-id="${id}">
+    <button class="pill field-toggle ${active ? '' : 'off'}" data-action="toggle-field" ${def.locked ? 'disabled title="姓名為必要欄位"' : ''}>${safe(def.label)}${def.locked ? '｜必要' : ''}</button>
+    <button class="field-arrow" data-action="expand-field" type="button">${expandable ? (isExpanded ? '▴' : '▾') : ''}</button>
+    ${source === 'custom' ? `<button class="field-delete" data-action="delete-custom-field" type="button">×</button>` : ''}
+    ${optionEditor}
+  </div>`;
+}
+
+function renderOptionEditor(source, id, type, options, setting = {}) {
+  const editableOptions = OPTION_FIELD_TYPES.has(type);
+  return `<div class="field-option-panel">
+    ${source === 'custom' ? `<label>欄位名稱<input data-custom-prop="label" data-custom-id="${id}" value="${safe(setting.label)}" /></label>
+      <div class="grid two compact"><label>欄位類型<select data-custom-prop="type" data-custom-id="${id}">${['text','textarea','number','date','select','radio','checkbox'].map(t => `<option value="${t}" ${type === t ? 'selected' : ''}>${fieldTypeText(t)}</option>`).join('')}</select></label>
+      <label class="inline-check option-check"><input type="checkbox" data-custom-prop="required" data-custom-id="${id}" ${setting.required ? 'checked' : ''}/> 必填</label></div>` : ''}
+    ${editableOptions ? `<div class="option-chip-list">${options.map((o, idx) => `<span class="option-chip">${safe(o)}<button data-action="remove-option" data-source="${source}" data-field-id="${id}" data-option-index="${idx}" type="button">×</button></span>`).join('')}</div>
+      <button class="btn btn-outline mini" data-action="add-option" data-source="${source}" data-field-id="${id}" type="button">＋ 新增選項</button>` : `<div class="notice">此欄位沒有下拉選項；可停用或刪除此欄位。</div>`}
+  </div>`;
+}
+
+function renderCustomFieldList() {
+  const list = normalizeCustomFields(editorCustomFields);
+  editorCustomFields = list;
+  if (!list.length) return '<div class="notice mt-3">尚未新增自訂欄位。</div>';
+  return `<div class="field-setting-list mt-3">${list.map(f => renderFieldSettingCard(f, f, 'custom')).join('')}</div>`;
+}
+
+function fieldTypeText(type) {
+  return ({ text:'文字', textarea:'長文字', number:'數字', date:'日期', select:'下拉選單', radio:'單選', checkbox:'多選', email:'電子郵件' })[type] || type;
+}
+
+function bindFieldSettingEvents() {
+  document.querySelectorAll('[data-action="toggle-field"]').forEach(btn => btn.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-field-source]');
+    toggleEditorField(card.dataset.fieldSource, card.dataset.fieldId);
+  }));
+  document.querySelectorAll('[data-action="expand-field"]').forEach(btn => btn.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-field-source]');
+    const key = `${card.dataset.fieldSource}:${card.dataset.fieldId}`;
+    expandedFieldId = expandedFieldId === key ? '' : key;
+    renderTemplatePreview();
+  }));
+  document.querySelectorAll('[data-action="delete-custom-field"]').forEach(btn => btn.addEventListener('click', (e) => {
+    const id = e.target.closest('[data-field-source]').dataset.fieldId;
+    editorCustomFields = editorCustomFields.filter(f => f.id !== id);
+    renderTemplatePreview();
+  }));
+  document.querySelectorAll('[data-action="add-option"]').forEach(btn => btn.addEventListener('click', () => addOptionToEditorField(btn.dataset.source, btn.dataset.fieldId)));
+  document.querySelectorAll('[data-action="remove-option"]').forEach(btn => btn.addEventListener('click', () => removeOptionFromEditorField(btn.dataset.source, btn.dataset.fieldId, Number(btn.dataset.optionIndex))));
+  document.querySelectorAll('[data-custom-prop]').forEach(input => input.addEventListener('change', () => updateCustomFieldProp(input.dataset.customId, input.dataset.customProp, input.type === 'checkbox' ? input.checked : input.value)));
+}
+
+function toggleEditorField(source, id) {
+  if (source === 'fixed') {
+    const def = FIXED_FIELD_DEFS.find(f => f.key === id);
+    if (def?.locked) return;
+    editorFieldSettings[id].active = editorFieldSettings[id].active === false;
+  } else {
+    editorCustomFields = editorCustomFields.map(f => f.id === id ? { ...f, active: f.active === false } : f);
+  }
+  renderTemplatePreview();
+}
+
+function addOptionToEditorField(source, id) {
+  const value = prompt('請輸入新增選項名稱');
+  if (!value) return;
+  if (source === 'fixed') editorFieldSettings[id].options = [...(editorFieldSettings[id].options || []), value.trim()];
+  else editorCustomFields = editorCustomFields.map(f => f.id === id ? { ...f, options: [...(f.options || []), value.trim()] } : f);
+  renderTemplatePreview();
+}
+
+function removeOptionFromEditorField(source, id, idx) {
+  if (source === 'fixed') editorFieldSettings[id].options = (editorFieldSettings[id].options || []).filter((_, i) => i !== idx);
+  else editorCustomFields = editorCustomFields.map(f => f.id === id ? { ...f, options: (f.options || []).filter((_, i) => i !== idx) } : f);
+  renderTemplatePreview();
+}
+
+function updateCustomFieldProp(id, prop, value) {
+  editorCustomFields = editorCustomFields.map(f => {
+    if (f.id !== id) return f;
+    const next = { ...f, [prop]: value };
+    if (prop === 'type' && OPTION_FIELD_TYPES.has(value) && (!next.options || !next.options.length)) next.options = ['選項1','選項2'];
+    return next;
+  });
+  renderTemplatePreview();
+}
+
+function addCustomFieldFromEditor() {
+  const label = $('newFieldLabel').value.trim();
+  const type = $('newFieldType').value;
+  if (!label) return toast('請先輸入自訂欄位名稱。', 'warn');
+  const id = 'custom_' + randomId(8);
+  editorCustomFields.push({ id, label, type, required: $('newFieldRequired').checked, active: true, options: OPTION_FIELD_TYPES.has(type) ? ['選項1','選項2'] : [] });
+  $('newFieldLabel').value = '';
+  $('newFieldRequired').checked = false;
+  expandedFieldId = `custom:${id}`;
+  renderTemplatePreview();
 }
 
 function renderDashboard() {
@@ -416,9 +737,14 @@ function renderCasesTable() {
   });
   $('caseTable').innerHTML = `<table class="data-table"><thead><tr><th>案件</th><th>模板</th><th>狀態</th><th>報名進度</th><th>停車位</th><th>截止日</th><th>操作</th></tr></thead><tbody>${filtered.map(c => {
     const count = countRegs(c.id);
-    return `<tr><td><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}</small></td><td><span class="badge ${c.audience === 'external' ? 'orange' : 'blue'}">${c.audience === 'external' ? '外部' : '內部'}</span></td><td><span class="badge ${c.status}">${statusText(c.status)}</span></td><td>${count}/${c.quota || '不限'}</td><td>${c.parkingSlots || 0} 位</td><td>${safe(c.deadline)}</td><td><button class="btn btn-outline" data-fill="${c.id}">填寫</button> <button class="btn btn-secondary" data-report="${c.id}">統計</button></td></tr>`;
-  }).join('')}</tbody></table>`;
-  document.querySelectorAll('[data-fill]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.fill; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
+    const ownReg = ownRegistrationFor(c.id);
+    const manageBtn = canManageCase(c) ? `<button class="btn btn-secondary" data-report="${c.id}">案件管理</button>` : '';
+    const reEditBtn = ownReg ? `<button class="btn btn-outline" data-reedit="${c.id}">重新編輯</button>` : `<button class="btn btn-outline" disabled>重新編輯</button>`;
+    const fillBtn = c.status === 'open' ? `<button class="btn btn-outline" data-fill="${c.id}">填寫</button>` : `<button class="btn btn-outline" disabled>填寫</button>`;
+    return `<tr><td><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}｜承辦：${safe(c.createdByName || c.createdByEmail || '未記錄')}</small></td><td><span class="badge ${c.audience === 'external' ? 'orange' : 'blue'}">${c.audience === 'external' ? '外部' : '內部'}</span></td><td><span class="badge ${c.status}">${statusText(c.status)}</span></td><td>${count}/${c.quota || '不限'}</td><td>${c.parkingSlots || 0} 位</td><td>${safe(c.deadline)}</td><td><div class="case-action-group">${fillBtn}${reEditBtn}${manageBtn}</div></td></tr>`;
+  }).join('') || '<tr><td colspan="7"><div class="notice">目前沒有符合條件的案件。</div></td></tr>'}</tbody></table>`;
+  document.querySelectorAll('[data-fill]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.fill; registrationEditingId = ''; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
+  document.querySelectorAll('[data-reedit]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.reedit; const reg = ownRegistrationFor(selectedCaseId); registrationEditingId = reg?.id || ''; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
   document.querySelectorAll('[data-report]').forEach(btn => btn.addEventListener('click', () => { reportCaseId = btn.dataset.report; renderCaseSelects(); renderReports(); showPage('reports'); }));
 }
 
@@ -427,8 +753,10 @@ function renderCaseSelects() {
   const list = open.length ? open : cases;
   const options = list.map(c => `<option value="${c.id}">${c.title}</option>`).join('');
   $('registrationCaseSelect').innerHTML = options;
-  $('reportCaseSelect').innerHTML = cases.map(c => `<option value="${c.id}">${c.title}</option>`).join('');
+  const manageable = cases.filter(c => canManageCase(c));
+  $('reportCaseSelect').innerHTML = manageable.map(c => `<option value="${c.id}">${c.title}</option>`).join('');
   if (selectedCaseId) $('registrationCaseSelect').value = selectedCaseId;
+  if (!reportCaseId || !manageable.some(c => c.id === reportCaseId)) reportCaseId = manageable[0]?.id || '';
   if (reportCaseId) $('reportCaseSelect').value = reportCaseId;
 }
 
@@ -445,44 +773,85 @@ function renderRegistrationForm() {
   selectedCaseId = c.id;
   $('registrationCaseSelect').value = c.id;
   const count = countRegs(c.id);
-  $('registrationHeader').innerHTML = `<h3>${safe(c.title)}</h3><p>${safe(c.agencyName)}｜${safe(c.type)}｜截止日：${safe(c.deadline)}｜名額：${count}/${c.quota || '不限'}</p>`;
+  const existing = registrationEditingId ? registrations.find(r => r.id === registrationEditingId) : ownRegistrationFor(c.id);
+  if (existing) registrationEditingId = existing.id;
+  $('submitRegistrationBtn').textContent = existing ? '更新報名資料' : '送出報名';
+  $('registrationHeader').innerHTML = `<h3>${safe(c.title)}</h3><p>${safe(c.agencyName)}｜${safe(c.type)}｜截止日：${safe(c.deadline)}｜名額：${count}/${c.quota || '不限'}${existing ? `｜目前序號：${safe(existing.serialNo)}` : ''}</p>`;
   $('parkingNotice').innerHTML = `本案承辦人設定停車位 <strong>${c.parkingSlots || 0}</strong> 位；需要停車者依送出時間先後分配，額滿後自動列為候補。`;
 
-  const isExternal = c.audience === 'external';
-  const internalFields = isExternal ? '' : `
-    <label>${FIELD.unitGroup}<select name="unitGroup" required><option value="field">外勤單位</option><option value="office">內勤科室</option></select></label>
-    <label>${FIELD.unit}<select name="unit" required></select></label>
-    <label>${FIELD.subUnit}<input name="subUnit" placeholder="例如：板橋分隊、救護股、承辦科室" /></label>
-    <label>${FIELD.dutyType}<select name="dutyType" required><option value="field">外勤</option><option value="office">內勤</option></select></label>
-    <label>${FIELD.position}<select name="position" required></select></label>`;
-
-  $('registrationForm').innerHTML = `
-    <label>${FIELD.applicantName}<input name="applicantName" required placeholder="請輸入姓名" /></label>
-    <label>${FIELD.phone}<input name="phone" required placeholder="請輸入聯絡電話" /></label>
-    <label>${FIELD.email}<input name="email" type="email" placeholder="請輸入電子郵件" value="${currentUser?.email || ''}" /></label>
-    <label>${FIELD.gender}<select name="gender" required><option value="男">男</option><option value="女">女</option></select></label>
-    <label>${FIELD.age}<input name="age" type="number" min="0" max="120" required placeholder="請輸入年齡" /></label>
-    ${internalFields}
-    <label>${FIELD.parkingNeed}<select name="parkingNeed"><option>不需要停車</option><option>需要停車</option></select></label>
-    <label>${FIELD.meal}<select name="meal"><option>葷</option><option>素</option><option>不需餐食</option></select></label>
-    <label class="full">${FIELD.note}<textarea name="note" rows="3" placeholder="特殊需求或補充事項"></textarea></label>
-  `;
+  const settings = normalizeFieldSettings(c.fieldSettings, c.audience);
+  const activeDefs = visibleFixedFieldDefs(c.audience).filter(def => settings[def.key]?.active !== false);
+  const fixedHtml = activeDefs.map(def => renderFixedInput(def, settings[def.key], c)).join('');
+  const customHtml = normalizeCustomFields(c.customFields).filter(f => f.active !== false).map(f => renderCustomInput(f, existing?.formData)).join('');
+  $('registrationForm').innerHTML = fixedHtml + customHtml;
 
   const form = $('registrationForm');
-  if (!isExternal) {
+  if (form.unitGroup || form.dutyType) {
     const updateUnitOptions = () => {
-      const group = form.unitGroup.value;
+      if (!form.unit) return;
+      const group = form.unitGroup?.value === 'office' || form.unitGroup?.value === '內勤科室' ? 'office' : 'field';
       form.unit.innerHTML = FIREFIGHTER_UNITS[group].map(u => `<option>${u}</option>`).join('');
     };
     const updatePositionOptions = () => {
-      const duty = form.dutyType.value;
+      if (!form.position) return;
+      const duty = form.dutyType?.value === 'office' || form.dutyType?.value === '內勤' ? 'office' : 'field';
       form.position.innerHTML = POSITIONS[duty].map(p => `<option>${p}</option>`).join('');
     };
-    form.unitGroup.addEventListener('change', updateUnitOptions);
-    form.dutyType.addEventListener('change', updatePositionOptions);
+    form.unitGroup?.addEventListener('change', updateUnitOptions);
+    form.dutyType?.addEventListener('change', updatePositionOptions);
     updateUnitOptions();
     updatePositionOptions();
   }
+
+  if (existing) fillRegistrationForm(existing.formData || {}, c);
+}
+
+function renderFixedInput(def, setting, c) {
+  const required = setting.required ? 'required' : '';
+  const label = `${safe(setting.label || def.label)}${setting.required ? ' *' : ''}`;
+  const cls = def.full || def.type === 'textarea' ? ' class="full"' : '';
+  if (def.key === 'unitGroup') return `<label${cls}>${label}<select name="unitGroup" ${required}><option value="field">外勤單位</option><option value="office">內勤科室</option></select></label>`;
+  if (def.key === 'unit') return `<label${cls}>${label}<select name="unit" ${required}></select></label>`;
+  if (def.key === 'dutyType') return `<label${cls}>${label}<select name="dutyType" ${required}><option value="field">外勤</option><option value="office">內勤</option></select></label>`;
+  if (def.key === 'position') return `<label${cls}>${label}<select name="position" ${required}></select></label>`;
+  if (def.type === 'select') return `<label${cls}>${label}<select name="${def.key}" ${required}>${(setting.options || []).map(o => `<option>${safe(o)}</option>`).join('')}</select></label>`;
+  if (def.type === 'textarea') return `<label${cls}>${label}<textarea name="${def.key}" rows="3" placeholder="${safe(setting.label)}"></textarea></label>`;
+  const type = def.type === 'email' ? 'email' : def.type === 'number' ? 'number' : 'text';
+  const value = def.key === 'email' ? ` value="${safe(currentUser?.email)}"` : '';
+  return `<label${cls}>${label}<input name="${def.key}" type="${type}" ${required}${value} placeholder="請輸入${safe(setting.label || def.label)}" /></label>`;
+}
+
+function renderCustomInput(field, data = {}) {
+  const name = `custom_${field.id}`;
+  const label = `${safe(field.label)}${field.required ? ' *' : ''}`;
+  const required = field.required ? 'required' : '';
+  const value = data?.[name] || '';
+  if (field.type === 'textarea') return `<label class="full">${label}<textarea name="${name}" rows="3" ${required}>${safe(value)}</textarea></label>`;
+  if (field.type === 'select') return `<label>${label}<select name="${name}" ${required}>${(field.options || []).map(o => `<option ${value === o ? 'selected' : ''}>${safe(o)}</option>`).join('')}</select></label>`;
+  if (field.type === 'radio') return `<label class="full">${label}<div class="radio-group">${(field.options || []).map(o => `<label><input type="radio" name="${name}" value="${safe(o)}" ${value === o ? 'checked' : ''} ${required}> ${safe(o)}</label>`).join('')}</div></label>`;
+  if (field.type === 'checkbox') {
+    const selected = Array.isArray(value) ? value : safe(value).split('、').filter(Boolean);
+    return `<label class="full">${label}<div class="radio-group">${(field.options || []).map(o => `<label><input type="checkbox" name="${name}" value="${safe(o)}" ${selected.includes(o) ? 'checked' : ''}> ${safe(o)}</label>`).join('')}</div></label>`;
+  }
+  const type = ['number','date'].includes(field.type) ? field.type : 'text';
+  return `<label>${label}<input name="${name}" type="${type}" ${required} value="${safe(value)}" placeholder="請輸入${safe(field.label)}" /></label>`;
+}
+
+function fillRegistrationForm(data, c) {
+  const form = $('registrationForm');
+  if (form.unitGroup && data.unitGroup) form.unitGroup.value = data.unitGroup;
+  if (form.dutyType && data.dutyType) form.dutyType.value = data.dutyType;
+  form.unitGroup?.dispatchEvent(new Event('change'));
+  form.dutyType?.dispatchEvent(new Event('change'));
+  Object.entries(data).forEach(([key, value]) => {
+    const elements = form.querySelectorAll(`[name="${key}"]`);
+    if (!elements.length) return;
+    elements.forEach(el => {
+      if (el.type === 'radio') el.checked = el.value === value;
+      else if (el.type === 'checkbox') el.checked = Array.isArray(value) ? value.includes(el.value) : safe(value).split('、').includes(el.value);
+      else el.value = value;
+    });
+  });
 }
 
 function renderAttachmentInfo() {
@@ -510,7 +879,11 @@ async function submitRegistration() {
   if (c.status !== 'open') return toast('此案件目前未開放報名。', 'danger');
   const form = $('registrationForm');
   if (!form.reportValidity()) return;
+  const existing = registrationEditingId ? registrations.find(r => r.id === registrationEditingId) : ownRegistrationFor(c.id);
   const formData = Object.fromEntries(new FormData(form).entries());
+  normalizeCustomFields(c.customFields).filter(f => f.active !== false && f.type === 'checkbox').forEach(f => {
+    formData[`custom_${f.id}`] = formOptionValues(`custom_${f.id}`);
+  });
   if (c.audience === 'external') {
     formData.unitGroup = 'external';
     formData.unit = OUTSIDE_PLACEHOLDER;
@@ -518,33 +891,49 @@ async function submitRegistration() {
     formData.dutyType = 'external';
     formData.position = '';
   }
+  if (!formData.parkingNeed) formData.parkingNeed = '不需要停車';
+  if (!formData.meal) formData.meal = '不需餐食';
   const file = $('attachmentInput').files?.[0] || null;
-  if (c.attachmentMode === 'required' && !file) return toast('本案要求上傳附件，請先選擇附件。', 'danger');
-  const serialNo = generateSerial(c);
-  const parkingStatus = assignParkingStatus(c, formData.parkingNeed);
+  if (c.attachmentMode === 'required' && !file && !existing?.attachment) return toast('本案要求上傳附件，請先選擇附件。', 'danger');
+  const serialNo = existing?.serialNo || generateSerial(c);
+  const parkingStatus = assignParkingStatus(c, formData.parkingNeed, existing?.id);
   formData.parkingStatus = parkingStatus;
-  let attachment = null;
+  let attachment = existing?.attachment || null;
   if (file) attachment = await uploadAttachmentToDriveOrDemo(file, c, serialNo);
 
   const payload = {
     caseId: c.id,
     serialNo,
-    applicantName: formData.applicantName,
-    applicantEmail: formData.email || currentUser?.email || '',
-    createdBy: currentUser?.uid || '',
-    createdByEmail: currentUser?.email || '',
+    applicantName: formData.applicantName || existing?.applicantName || '',
+    applicantEmail: formData.email || currentUser?.email || existing?.applicantEmail || '',
+    createdBy: existing?.createdBy || currentUser?.uid || '',
+    createdByEmail: existing?.createdByEmail || currentUser?.email || '',
     formData,
     attachment,
-    submittedAtMillis: Date.now()
+    submittedAtMillis: existing?.submittedAtMillis || Date.now(),
+    updatedAtMillis: Date.now()
   };
 
   if (usingFirebase && db) {
-    const docRef = await addDoc(collection(db, 'registrations'), { ...payload, submittedAt: serverTimestamp() });
-    registrations.unshift({ id: docRef.id, ...payload });
+    if (existing?.id) {
+      await updateDoc(doc(db, 'registrations', existing.id), { ...payload, updatedAt: serverTimestamp() });
+      registrations = registrations.map(r => r.id === existing.id ? { ...r, ...payload } : r);
+    } else {
+      const docRef = await addDoc(collection(db, 'registrations'), { ...payload, submittedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      registrations.unshift({ id: docRef.id, ...payload });
+      registrationEditingId = docRef.id;
+    }
   } else {
     const store = loadStore();
     store.registrations = store.registrations || [];
-    store.registrations.unshift({ id: 'reg_' + randomId(8), ...payload });
+    if (existing?.id) {
+      store.registrations = store.registrations.map(r => r.id === existing.id ? { ...r, ...payload } : r);
+      registrationEditingId = existing.id;
+    } else {
+      const id = 'reg_' + randomId(8);
+      store.registrations.unshift({ id, ...payload });
+      registrationEditingId = id;
+    }
     saveStore(store);
     registrations = store.registrations;
   }
@@ -553,8 +942,13 @@ async function submitRegistration() {
   await loadAllData();
   renderAll();
   await exportRegistrationPdf(payload, c);
-  toast(`報名完成，序號：${serialNo}；${parkingStatus}`, 'ok');
-  showPage('reports');
+  toast(`${existing ? '報名資料已更新' : '報名完成'}，序號：${serialNo}；${parkingStatus}`, 'ok');
+  if (canManageCase(c)) {
+    reportCaseId = c.id;
+    showPage('reports');
+  } else {
+    showPage('cases');
+  }
 }
 
 function generateSerial(c) {
@@ -562,10 +956,10 @@ function generateSerial(c) {
   return `${c.serialPrefix || 'NTP-FIRE'}-${c.caseCode || 'CASE'}-${date}-${randomId(4)}`;
 }
 
-function assignParkingStatus(c, parkingNeed) {
+function assignParkingStatus(c, parkingNeed, excludeRegId = '') {
   if (parkingNeed !== '需要停車') return '不需停車';
   const slots = Number(c.parkingSlots || 0);
-  const usedBefore = registrations.filter(r => r.caseId === c.id && r.formData?.parkingNeed === '需要停車').length;
+  const usedBefore = registrations.filter(r => r.caseId === c.id && r.id !== excludeRegId && r.formData?.parkingNeed === '需要停車').length;
   if (slots <= 0) return `候補第 ${usedBefore + 1} 位（本案未設定可用車位）`;
   if (usedBefore < slots) return `正取第 ${usedBefore + 1} 車位`;
   return `候補第 ${usedBefore - slots + 1} 位`;
@@ -687,10 +1081,16 @@ function registrationsFor(caseId) { return registrations.filter(r => r.caseId ==
 
 function renderReports() {
   renderCaseSelects();
-  const c = getCase(reportCaseId) || cases[0];
-  if (!c) return;
+  const manageable = cases.filter(c => canManageCase(c));
+  const c = getCase(reportCaseId) || manageable[0];
+  if (!c) {
+    $('registrationsTable').innerHTML = '<div class="notice warn">目前沒有您可管理的案件。</div>';
+    return;
+  }
+  if (!canManageCase(c)) return;
   reportCaseId = c.id;
   $('reportCaseSelect').value = c.id;
+  $('toggleCaseStatusBtn').textContent = c.status === 'open' ? '將案件改為已截止' : '重新開放案件';
   const regs = registrationsFor(c.id);
   $('reportTotal').textContent = regs.length;
   $('reportParking').textContent = regs.filter(r => r.formData?.parkingNeed === '需要停車').length;
@@ -770,7 +1170,7 @@ function exportExcelWorkbook() {
 }
 
 function rowForExport(r, c, index) {
-  return {
+  const row = {
     序號: index,
     系統序號: r.serialNo,
     姓名: r.formData?.applicantName || '',
@@ -789,6 +1189,38 @@ function rowForExport(r, c, index) {
     附件: r.attachment?.webViewLink || r.attachment?.fileName || '',
     報名時間: r.submittedAtMillis ? new Date(r.submittedAtMillis).toLocaleString('zh-TW', { hour12: false }) : ''
   };
+  normalizeCustomFields(c.customFields).filter(f => f.active !== false).forEach(f => {
+    const val = r.formData?.[`custom_${f.id}`];
+    row[f.label] = Array.isArray(val) ? val.join('、') : safe(val);
+  });
+  return row;
+}
+
+function rowsForRegistration(reg, c) {
+  const settings = normalizeFieldSettings(c.fieldSettings, c.audience);
+  const rows = [['系統序號', reg.serialNo]];
+  const add = (key, value) => {
+    if (settings[key]?.active !== false) rows.push([settings[key]?.label || FIELD[key] || key, value]);
+  };
+  add('applicantName', reg.formData.applicantName);
+  add('phone', reg.formData.phone);
+  add('email', reg.formData.email);
+  add('gender', reg.formData.gender);
+  add('age', reg.formData.age);
+  if (c.audience !== 'external') {
+    add('unit', unitText(reg, c));
+    add('dutyType', dutyText(reg.formData.dutyType));
+    add('position', reg.formData.position);
+  }
+  add('parkingNeed', reg.formData.parkingNeed);
+  if (settings.parkingNeed?.active !== false) rows.push(['停車序位', reg.formData.parkingStatus]);
+  add('meal', reg.formData.meal);
+  normalizeCustomFields(c.customFields).filter(f => f.active !== false).forEach(f => {
+    const val = reg.formData?.[`custom_${f.id}`];
+    rows.push([f.label, Array.isArray(val) ? val.join('、') : safe(val)]);
+  });
+  add('note', reg.formData.note || '');
+  return rows;
 }
 
 function unitText(r, c) {
@@ -798,10 +1230,7 @@ function unitText(r, c) {
 function dutyText(v) { return v === 'office' ? '內勤' : v === 'field' ? '外勤' : ''; }
 
 async function exportRegistrationPdf(reg, c) {
-  const rows = [
-    ['系統序號', reg.serialNo], ['姓名', reg.formData.applicantName], ['電話', reg.formData.phone], ['電子郵件', reg.formData.email], ['性別', reg.formData.gender], ['年齡', reg.formData.age],
-    ['單位', unitText(reg, c)], ['職稱', reg.formData.position || (c.audience === 'external' ? '外部人員不填寫' : '')], ['停車需求', reg.formData.parkingNeed], ['停車序位', reg.formData.parkingStatus], ['餐食', reg.formData.meal], ['備註', reg.formData.note || '']
-  ];
+  const rows = rowsForRegistration(reg, c);
   await renderPdfPage({ title: `${c.title}｜正式報名表`, agency: c.agencyName, serial: reg.serialNo, rows, note: c.note, footer: '本文件由消防局多功能報名系統自動產出，可作為公文系統附件。', filename: `${sanitizeFilename(c.title)}_${reg.serialNo}_報名表.pdf`, signature: true });
 }
 

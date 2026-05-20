@@ -1,4 +1,4 @@
-// 消防局多功能報名系統 V1 設定檔
+// 消防局多功能報名系統 V2 設定檔
 // 1) Firebase 設定值：Firebase Console → 專案設定 → 一般 → 您的應用程式 → SDK setup and configuration → Config
 // 2) Google OAuth Client ID：Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client IDs
 // 注意：Firebase apiKey 在前端是公開識別碼，不等於資料庫密碼；真正的資料安全靠 Firestore Rules。
@@ -13,12 +13,12 @@ window.APP_CONFIG = {
   allowDemoMode: true,
 
   firebaseConfig: {
-    apiKey: "AIzaSyC-MOTqAX2BMqKgOHGuyUAtSCFx-E5DCGI",
-  authDomain: "easysignup-59036.firebaseapp.com",
-  projectId: "easysignup-59036",
-  storageBucket: "easysignup-59036.firebasestorage.app",
-  messagingSenderId: "809543820672",
-  appId: "1:809543820672:web:bcb7eb1fba809f73ca8d65"
+    apiKey: 'PASTE_FIREBASE_API_KEY_HERE',
+    authDomain: 'PASTE_PROJECT_ID.firebaseapp.com',
+    projectId: 'PASTE_PROJECT_ID',
+    storageBucket: 'PASTE_PROJECT_ID.firebasestorage.app',
+    messagingSenderId: 'PASTE_MESSAGING_SENDER_ID',
+    appId: 'PASTE_FIREBASE_APP_ID'
   },
 
   // Google Drive API 附件上傳使用。必須是「Web application」OAuth Client ID。
