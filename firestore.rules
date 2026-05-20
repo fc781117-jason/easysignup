@@ -8,7 +8,7 @@ service cloud.firestore {
       return signedIn() && request.auth.token.email == 'fc781117@gmail.com';
     }
     function isOwner() {
-      return signedIn() && resource.data.createdBy == request.auth.uid;
+      return signedIn() && (resource.data.createdBy == request.auth.uid || resource.data.createdByEmail == request.auth.token.email);
     }
     function isCreatingOwnDoc() {
       return signedIn() && request.resource.data.createdBy == request.auth.uid;
