@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>消防局多功能報名系統 V3</title>
-  <link rel="stylesheet" href="./styles.css?v=3.0.0" />
-  <script src="./firebase-config.js?v=3.0.0"></script>
+  <title>消防局多功能報名系統 V4</title>
+  <link rel="stylesheet" href="./styles.css?v=4.0.0" />
+  <script src="./firebase-config.js?v=4.0.0"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -19,7 +19,7 @@
     <div class="login-card">
       <div class="brand-mark">🚒</div>
       <h1>消防局多功能報名系統</h1>
-      <p class="subtitle">Fire Department Registration Platform｜V3.0 欄位與案件管理優化版</p>
+      <p class="subtitle">Fire Department Registration Platform｜V4.0 PDF 輸出修正版</p>
       <div class="feature-list">
         <div>✅ 承辦人自建案件與表單</div>
         <div>✅ 內部 / 外部報名模板分流</div>
@@ -38,8 +38,8 @@
       <div class="side-brand">
         <span class="brand-icon">🚒</span>
         <div>
-          <strong>報名系統 V3</strong>
-          <small>Firebase / Drive Ready｜V3.0</small>
+          <strong>報名系統 V4</strong>
+          <small>Firebase / Drive Ready｜V4.0</small>
         </div>
       </div>
       <div class="user-card">
@@ -274,9 +274,9 @@
             <hr />
             <h3>輸出檔案</h3>
             <button id="exportExcelBtn" class="btn btn-primary wide">匯出 Excel 名冊</button>
-            <button id="exportRosterPdfBtn" class="btn btn-secondary wide mt-2">匯出 PDF 簽到表</button>
-            <button id="exportMealPdfBtn" class="btn btn-secondary wide mt-2">匯出 PDF 餐食簽收表</button>
-            <button id="exportStatsPdfBtn" class="btn btn-outline wide mt-2">匯出 PDF 統計報告</button>
+            <button id="exportRosterPdfBtn" class="btn btn-secondary wide mt-2">預覽／下載 PDF 簽到表</button>
+            <button id="exportMealPdfBtn" class="btn btn-secondary wide mt-2">預覽／下載 PDF 餐食簽收表</button>
+            <button id="exportStatsPdfBtn" class="btn btn-outline wide mt-2">預覽／下載 PDF 統計報告</button>
             <div class="notice mt-3">Excel 會包含「報名名冊、簽到表、餐食簽收、停車名冊」四個工作表，方便承辦人後續自行修改。</div>
           </div>
         </div>
@@ -311,8 +311,8 @@
     </main>
   </section>
 
-  <div id="pdfCanvas" class="pdf-canvas hidden"></div>
+  <div id="pdfCanvas" class="pdf-canvas hidden" aria-hidden="true"></div>
 
-  <script type="module" src="./app.js?v=3.0.0"></script>
+  <script type="module" src="./app.js?v=4.0.0"></script>
 </body>
 </html>

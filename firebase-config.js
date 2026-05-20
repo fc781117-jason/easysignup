@@ -1,4 +1,4 @@
-// 消防局多功能報名系統 V2 設定檔
+// 消防局多功能報名系統 V4 設定檔
 // 1) Firebase 設定值：Firebase Console → 專案設定 → 一般 → 您的應用程式 → SDK setup and configuration → Config
 // 2) Google OAuth Client ID：Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client IDs
 // 注意：Firebase apiKey 在前端是公開識別碼，不等於資料庫密碼；真正的資料安全靠 Firestore Rules。

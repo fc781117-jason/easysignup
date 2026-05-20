@@ -24,7 +24,7 @@ import {
 
 const CONFIG = window.APP_CONFIG || {};
 const ADMIN_EMAIL = CONFIG.systemAdminEmail || 'fc781117@gmail.com';
-const STORAGE_KEY = 'fire-registration-app-v3';
+const STORAGE_KEY = 'fire-registration-app-v3'; // 保留 V3 key，避免使用者更新後 Demo 資料消失
 
 const OUTSIDE_PLACEHOLDER = '外部單位不列入統計';
 const FIELD = {
@@ -309,7 +309,7 @@ async function afterLogin(user, demo = false) {
   renderAll();
   applyRoleNavigation();
   showPage(isSystemAdmin() ? 'dashboard' : 'cases');
-  toast('登入成功，歡迎使用 V3 欄位與案件管理優化版。', 'ok');
+  toast('登入成功，歡迎使用 V4 PDF 輸出修正版。', 'ok');
 }
 
 async function logout() {
@@ -1282,30 +1282,117 @@ async function renderPdfPage({ title, agency, serial, rows, note, footer, filena
 
 async function renderListPdf({ agency, title, headers, rows, filename }) {
   const box = $('pdfCanvas');
-  box.innerHTML = `<div class="pdf-page"><div class="pdf-header"><div><small>${safe(agency)}</small><h1>${safe(title)}</h1></div><div class="serial-box"><div>${todayISO()}</div></div></div><table class="pdf-table"><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(v => `<td style="height:38px">${safe(v)}</td>`).join('')}</tr>`).join('')}</tbody></table><div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>消防局多功能報名系統</span></div></div>`;
+  const displayRows = rows.length ? rows : [['', '', '', '目前尚無報名資料', '', '']];
+  box.innerHTML = `<div class="pdf-page"><div class="pdf-header"><div><small>${safe(agency)}</small><h1>${safe(title)}</h1></div><div class="serial-box"><div>${todayISO()}</div></div></div><table class="pdf-table list-pdf-table"><thead><tr>${headers.map(h => `<th>${safe(h)}</th>`).join('')}</tr></thead><tbody>${displayRows.map(row => `<tr>${row.map(v => `<td style="height:38px">${safe(v)}</td>`).join('')}</tr>`).join('')}</tbody></table><div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>消防局多功能報名系統</span></div></div>`;
   await savePdfFromElement(box.firstElementChild, filename);
 }
 
-async function savePdfFromElement(el, filename) {
-  toast('正在產出 PDF，請稍候。');
-  const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#fff' });
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  const pageW = pdf.internal.pageSize.getWidth();
-  const pageH = pdf.internal.pageSize.getHeight();
-  const imgW = pageW;
-  const imgH = canvas.height * imgW / canvas.width;
-  let position = 0;
-  pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, position, imgW, imgH);
-  let heightLeft = imgH - pageH;
-  while (heightLeft > 0) {
-    position = heightLeft - imgH;
-    pdf.addPage();
-    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, position, imgW, imgH);
-    heightLeft -= pageH;
+function waitFrame() {
+  return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function preparePdfCanvas() {
+  const box = $('pdfCanvas');
+  box.classList.remove('hidden');
+  box.style.display = 'block';
+  box.style.position = 'fixed';
+  box.style.left = '0';
+  box.style.top = '0';
+  box.style.width = '794px';
+  box.style.opacity = '0';
+  box.style.pointerEvents = 'none';
+  box.style.zIndex = '-1';
+  box.setAttribute('aria-hidden', 'true');
+  return box;
+}
+
+function hidePdfCanvas() {
+  const box = $('pdfCanvas');
+  box.classList.add('hidden');
+  box.removeAttribute('style');
+}
+
+function openPrintablePreview(el, filename) {
+  const css = Array.from(document.styleSheets)
+    .map(sheet => {
+      try { return Array.from(sheet.cssRules).map(rule => rule.cssText).join('\n'); }
+      catch (_) { return ''; }
+    })
+    .join('\n');
+  const win = window.open('', '_blank');
+  if (!win) {
+    toast('瀏覽器阻擋 PDF 預覽視窗。請允許彈出式視窗，或改用桌機瀏覽器下載。', 'warn');
+    return;
   }
-  pdf.save(filename);
-  toast('PDF 已產出。', 'ok');
+  win.document.open();
+  win.document.write(`<!doctype html><html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${safe(filename)}</title><style>${css} body{background:#f3f4f6;margin:0;padding:20px}.pdf-page{margin:0 auto;box-shadow:0 16px 40px rgba(0,0,0,.18)}.print-actions{max-width:794px;margin:0 auto 16px;display:flex;gap:8px}.print-actions button{font-size:16px;padding:10px 14px;border-radius:10px;border:1px solid #d0d5dd;background:#fff}@media print{body{background:#fff;padding:0}.print-actions{display:none}.pdf-page{box-shadow:none;margin:0}}</style></head><body><div class="print-actions"><button onclick="window.print()">列印／另存 PDF</button><button onclick="window.close()">關閉</button></div>${el.outerHTML}</body></html>`);
+  win.document.close();
+  toast('已開啟 PDF 預覽頁，可使用瀏覽器列印／另存 PDF。', 'ok');
+}
+
+function downloadOrPreviewPdf(pdf, filename) {
+  const blob = pdf.output('blob');
+  const url = URL.createObjectURL(blob);
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  if (!isIOS) a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function savePdfFromElement(el, filename) {
+  if (!el) return toast('PDF 內容尚未建立，請重新操作一次。', 'danger');
+  const box = preparePdfCanvas();
+  try {
+    toast('正在產出 PDF，請稍候。');
+    await waitFrame();
+    if (!window.html2canvas || !window.jspdf?.jsPDF) {
+      openPrintablePreview(el, filename);
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) throw new Error('PDF 版面尺寸為 0，已改用預覽模式。');
+    const scale = Math.min(2, Math.max(1.35, window.devicePixelRatio || 1.5));
+    const canvas = await html2canvas(el, {
+      scale,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+      width: Math.ceil(el.scrollWidth || rect.width),
+      height: Math.ceil(el.scrollHeight || rect.height),
+      windowWidth: Math.ceil(el.scrollWidth || rect.width),
+      windowHeight: Math.ceil(el.scrollHeight || rect.height)
+    });
+    if (!canvas.width || !canvas.height) throw new Error('PDF 轉圖失敗，已改用預覽模式。');
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const imgW = pageW;
+    const imgH = canvas.height * imgW / canvas.width;
+    const imgData = canvas.toDataURL('image/jpeg', 0.96);
+    let position = 0;
+    pdf.addImage(imgData, 'JPEG', 0, position, imgW, imgH, undefined, 'FAST');
+    let heightLeft = imgH - pageH;
+    while (heightLeft > 0) {
+      position = heightLeft - imgH;
+      pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', 0, position, imgW, imgH, undefined, 'FAST');
+      heightLeft -= pageH;
+    }
+    downloadOrPreviewPdf(pdf, filename);
+    toast('PDF 已產出；手機瀏覽器可能會以預覽頁開啟，桌機通常會直接下載。', 'ok');
+  } catch (err) {
+    console.error(err);
+    openPrintablePreview(el, filename);
+  } finally {
+    setTimeout(() => hidePdfCanvas(), 300);
+  }
 }
 
 function renderEnvStatus() {
