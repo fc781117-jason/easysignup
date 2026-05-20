@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>消防局多功能報名系統 V1</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="./firebase-config.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="toast" class="toast hidden"></div>
+
+  <section id="loginPage" class="login-shell">
+    <div class="login-card">
+      <div class="brand-mark">🚒</div>
+      <h1>消防局多功能報名系統</h1>
+      <p class="subtitle">Fire Department Registration Platform｜V1</p>
+      <div class="feature-list">
+        <div>✅ 承辦人自建案件與表單</div>
+        <div>✅ 內部 / 外部報名模板分流</div>
+        <div>✅ 單位、職稱、年齡、餐食、停車統計</div>
+        <div>✅ PDF 報名表、PDF 名冊、Excel 匯出</div>
+        <div>✅ 附件上傳至承辦人自己的 Google Drive</div>
+      </div>
+      <button id="googleLoginBtn" class="btn btn-primary wide">使用 Google 帳號登入</button>
+      <button id="demoLoginBtn" class="btn btn-outline wide">Demo 模式登入（未設定 Firebase 時使用）</button>
+      <p class="tiny muted mt-3">系統管理員固定：<strong id="adminEmailLabel"></strong>。正式上線前請完成 Firebase 與 Google OAuth 設定。</p>
+    </div>
+  </section>
+
+  <section id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="side-brand">
+        <span class="brand-icon">🚒</span>
+        <div>
+          <strong>報名系統 V1</strong>
+          <small>Firebase / Drive Ready</small>
+        </div>
+      </div>
+      <div class="user-card">
+        <div class="avatar" id="userAvatar">?</div>
+        <div>
+          <strong id="userName">未登入</strong>
+          <small id="userRole">使用者</small>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-page="dashboard">📊 儀表板</button>
+        <button class="nav-item" data-page="cases">📋 案件管理</button>
+        <button class="nav-item" data-page="caseEditor">➕ 新增 / 編輯案件</button>
+        <button class="nav-item" data-page="registration">✏️ 報名填寫</button>
+        <button class="nav-item" data-page="reports">📑 名冊與統計輸出</button>
+        <button class="nav-item" data-page="settings">⚙️ 系統設定</button>
+      </nav>
+      <button id="logoutBtn" class="logout">🚪 登出</button>
+    </aside>
+
+    <main class="main">
+      <section id="dashboard" class="page active">
+        <div class="page-head">
+          <div>
+            <h2>📊 儀表板</h2>
+            <p>總覽目前案件、報名人數、停車與餐食需求。</p>
+          </div>
+          <button class="btn btn-primary" data-jump="caseEditor">＋ 新增案件</button>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card red"><span id="statOpenCases">0</span><small>開放中案件</small></div>
+          <div class="stat-card"><span id="statRegistrations">0</span><small>總報名筆數</small></div>
+          <div class="stat-card"><span id="statParkingNeed">0</span><small>停車需求</small></div>
+          <div class="stat-card"><span id="statMealNeed">0</span><small>餐食需求</small></div>
+        </div>
+        <div class="grid two mt-5">
+          <div class="card">
+            <h3>近期案件</h3>
+            <div id="recentCases" class="list"></div>
+          </div>
+          <div class="card">
+            <h3>案件報名數</h3>
+            <canvas id="dashboardChart" height="210"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="cases" class="page">
+        <div class="page-head">
+          <div>
+            <h2>📋 案件管理</h2>
+            <p>管理訓練、講習、會議、甄選等報名案件。</p>
+          </div>
+          <button class="btn btn-primary" data-jump="caseEditor">＋ 新增案件</button>
+        </div>
+        <div class="card">
+          <div class="toolbar">
+            <input id="caseSearch" placeholder="搜尋案件名稱、類型、機關名稱" />
+            <select id="caseStatusFilter">
+              <option value="">全部狀態</option>
+              <option value="open">開放中</option>
+              <option value="draft">草稿</option>
+              <option value="closed">已截止</option>
+            </select>
+          </div>
+          <div id="caseTable" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="caseEditor" class="page">
+        <div class="page-head">
+          <div>
+            <h2>➕ 新增 / 編輯案件</h2>
+            <p>承辦人填寫機關名稱、案件標題、內外部模板、停車位、年齡區間與附件限制。</p>
+          </div>
+          <div class="actions">
+            <button id="resetCaseBtn" class="btn btn-outline">清空重填</button>
+            <button id="saveDraftBtn" class="btn btn-secondary">儲存草稿</button>
+            <button id="publishCaseBtn" class="btn btn-primary">發布案件</button>
+          </div>
+        </div>
+
+        <div class="grid three">
+          <div class="card form-card">
+            <h3>案件基本資料</h3>
+            <label>機關名稱<input id="caseAgency" /></label>
+            <label>案件標題<input id="caseTitle" placeholder="例如：114年度進階搶救技術訓練報名" /></label>
+            <label>案件類型
+              <select id="caseType">
+                <option>訓練報名</option>
+                <option>講習報名</option>
+                <option>會議報名</option>
+                <option>甄選報名</option>
+              </select>
+            </label>
+            <label>使用模板
+              <select id="caseAudience">
+                <option value="internal">消防局內部人員</option>
+                <option value="external">外部人員</option>
+              </select>
+            </label>
+            <div class="grid two compact">
+              <label>截止日期<input id="caseDeadline" type="date" /></label>
+              <label>名額上限<input id="caseQuota" type="number" min="0" value="0" /></label>
+            </div>
+            <div class="grid two compact">
+              <label>停車位數<input id="caseParkingSlots" type="number" min="0" value="0" /></label>
+              <label>附件大小上限 MB<input id="caseAttachmentLimit" type="number" min="1" value="10" /></label>
+            </div>
+            <label>是否需要附件
+              <select id="caseAttachmentMode">
+                <option value="none">不需要附件</option>
+                <option value="optional">可選擇上傳</option>
+                <option value="required">必須上傳</option>
+              </select>
+            </label>
+            <label>年齡統計方式
+              <select id="caseAgeBucketMode">
+                <option value="five">每 5 歲一組</option>
+                <option value="custom">承辦人自訂區間</option>
+              </select>
+            </label>
+            <label id="customAgeWrap" class="hidden">自訂年齡區間<input id="caseCustomAgeBuckets" placeholder="例如：18-24,25-29,30-34,35-39,40+" /></label>
+          </div>
+
+          <div class="card form-card">
+            <h3>固定欄位設定</h3>
+            <p class="muted small">第一版採固定模板，減少承辦人設定錯誤；後續可擴充拖拉式欄位。</p>
+            <div id="templatePreview" class="template-preview"></div>
+            <h3 class="mt-4">PDF 注意事項</h3>
+            <textarea id="caseNote" rows="5">請報名人確認資料正確。若需取消或補件，請於截止日前洽承辦人。</textarea>
+          </div>
+
+          <div class="card form-card">
+            <h3>承辦人 Google Drive</h3>
+            <p class="small muted">附件會上傳到「承辦人自己的 Google Drive」，不吃系統管理員或後台儲存空間。承辦人第一次使用附件功能時，系統會要求 Drive 授權。</p>
+            <label>附件儲存模式
+              <select id="uploadMode">
+                <option value="appsScript">承辦人 Google Drive（建議：Apps Script 端點）</option>
+                <option value="applicantDrive">報名者自己的 Google Drive（簡易版）</option>
+              </select>
+            </label>
+            <label>Drive 資料夾名稱<input id="driveFolderName" value="消防局報名系統附件" /></label>
+            <label>承辦人 Apps Script 上傳網址<input id="uploadEndpoint" placeholder="貼上 Google Apps Script Web App URL" /></label>
+            <button id="connectDriveBtn" class="btn btn-secondary wide">連接我的 Google Drive（簡易版使用）</button>
+            <div id="driveStatus" class="notice mt-3">建議使用 Apps Script 端點，讓附件直接進入承辦人自己的 Google Drive。若未設定，系統會退回 Demo 或報名者 Drive 模式。</div>
+            <hr />
+            <h3>序號規則</h3>
+            <p class="small muted">系統採建議格式：NTP-FIRE-案件代碼-日期-短ID，避免多人同時報名撞號。</p>
+            <label>序號前綴<input id="serialPrefix" /></label>
+            <label>案件代碼<input id="caseCode" placeholder="例如 TRAIN、MEET、SELECT" /></label>
+          </div>
+        </div>
+      </section>
+
+      <section id="registration" class="page">
+        <div class="page-head">
+          <div>
+            <h2>✏️ 報名填寫</h2>
+            <p>選擇開放案件後填寫報名資料；內部案件會顯示單位與職稱，外部案件會自動隱藏。</p>
+          </div>
+          <div class="actions">
+            <select id="registrationCaseSelect"></select>
+          </div>
+        </div>
+        <div class="grid three">
+          <div class="card form-card span-two">
+            <div id="registrationHeader" class="form-title"></div>
+            <form id="registrationForm" class="dynamic-form"></form>
+            <div class="actions right mt-4">
+              <button id="submitRegistrationBtn" class="btn btn-primary" type="button">送出報名</button>
+            </div>
+          </div>
+          <div class="card form-card">
+            <h3>附件上傳</h3>
+            <p class="small muted">如案件設定需要附件，請上傳 PDF 或圖片。檔案將存入承辦人設定的 Google Drive 資料夾。</p>
+            <input id="attachmentInput" type="file" accept=".pdf,.jpg,.jpeg,.png" />
+            <div id="attachmentInfo" class="notice mt-3">尚未選擇附件。</div>
+            <h3 class="mt-4">停車提醒</h3>
+            <div id="parkingNotice" class="notice">依承辦人設定車位數，採先報名先分配；額滿後自動列為候補序位。</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="reports" class="page">
+        <div class="page-head">
+          <div>
+            <h2>📑 名冊與統計輸出</h2>
+            <p>輸出正式報名表 PDF、報名名冊 Excel、簽到表與餐食簽收表。</p>
+          </div>
+          <select id="reportCaseSelect"></select>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card"><span id="reportTotal">0</span><small>報名人數</small></div>
+          <div class="stat-card"><span id="reportParking">0</span><small>需要停車</small></div>
+          <div class="stat-card"><span id="reportMealMeat">0</span><small>葷食</small></div>
+          <div class="stat-card"><span id="reportMealVeg">0</span><small>素食</small></div>
+        </div>
+        <div class="grid two mt-5">
+          <div class="card">
+            <h3>統計圖表</h3>
+            <div class="chart-grid">
+              <canvas id="genderChart" height="190"></canvas>
+              <canvas id="unitChart" height="190"></canvas>
+              <canvas id="positionChart" height="190"></canvas>
+              <canvas id="ageChart" height="190"></canvas>
+            </div>
+          </div>
+          <div class="card form-card">
+            <h3>輸出檔案</h3>
+            <button id="exportExcelBtn" class="btn btn-primary wide">匯出 Excel 名冊</button>
+            <button id="exportRosterPdfBtn" class="btn btn-secondary wide mt-2">匯出 PDF 簽到表</button>
+            <button id="exportMealPdfBtn" class="btn btn-secondary wide mt-2">匯出 PDF 餐食簽收表</button>
+            <button id="exportStatsPdfBtn" class="btn btn-outline wide mt-2">匯出 PDF 統計報告</button>
+            <div class="notice mt-3">Excel 會包含「報名名冊、簽到表、餐食簽收、停車名冊」四個工作表，方便承辦人後續自行修改。</div>
+          </div>
+        </div>
+        <div class="card mt-5">
+          <h3>報名者清單</h3>
+          <div id="registrationsTable" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="settings" class="page">
+        <div class="page-head">
+          <div>
+            <h2>⚙️ 系統設定</h2>
+            <p>檢查 Firebase、Google Drive 與系統管理員設定。</p>
+          </div>
+        </div>
+        <div class="grid two">
+          <div class="card form-card">
+            <h3>目前環境</h3>
+            <div id="envStatus" class="settings-list"></div>
+            <button id="seedDemoBtn" class="btn btn-secondary mt-3">建立示範資料</button>
+            <button id="clearDemoBtn" class="btn btn-outline mt-3">清除本機 Demo 資料</button>
+          </div>
+          <div class="card form-card">
+            <h3>固定系統管理員</h3>
+            <p class="notice">系統管理員固定寫死為 <strong id="settingsAdminEmail"></strong>，此角色不提供一般介面更改。</p>
+            <h3 class="mt-4">內建職稱規則</h3>
+            <div id="positionRuleBox" class="small-list"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </section>
+
+  <div id="pdfCanvas" class="pdf-canvas hidden"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

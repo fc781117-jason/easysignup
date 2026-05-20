@@ -1,0 +1,39 @@
+# 消防局多功能報名系統 V1
+
+這是一個可直接部署到 Vercel 的靜態網頁版 App，使用 Firebase Authentication / Firestore 作為登入與資料庫，並支援 PDF、Excel、簽到表、餐食簽收表輸出。
+
+## 內建需求
+
+- 系統管理員固定：`fc781117@gmail.com`
+- 案件類型：訓練報名、講習報名、會議報名、甄選報名
+- 內部報名欄位：姓名、電話、Email、性別、年齡、單位類型、單位、分隊/科室、內外勤、職稱、停車需求、餐食、備註
+- 外部報名欄位：姓名、電話、Email、性別、年齡、停車需求、餐食、備註
+- 性別：男 / 女，不提供「不便透露」
+- 年齡統計：每 5 歲一組，或由承辦人自訂區間
+- 停車：承辦人設定車位數，採先搶先贏，自動標示正取或候補序位
+- 匯出：PDF 報名表、PDF 簽到表、PDF 餐食簽收表、PDF 統計報告、Excel 名冊
+- 附件：支援 Google Drive API 或承辦人 Apps Script 端點
+
+## 檔案說明
+
+| 檔案 | 用途 |
+|---|---|
+| `index.html` | 主頁面 |
+| `styles.css` | 介面樣式 |
+| `app.js` | 系統邏輯 |
+| `firebase-config.js` | Firebase 與 Google OAuth 設定檔 |
+| `firestore.rules` | Firestore 安全規則 |
+| `apps-script-upload.js` | 承辦人 Google Drive 附件上傳用 Apps Script |
+| `SETUP_GUIDE.md` | 平台註冊與部署操作手冊 |
+
+## 快速測試
+
+1. 直接將整包檔案部署到 Vercel。
+2. 尚未填 Firebase 設定前，可使用「Demo 模式登入」先測試功能。
+3. 正式測試前，請依 `SETUP_GUIDE.md` 完成 Firebase、Google OAuth、Vercel 設定。
+
+## 正式部署前提醒
+
+- `firebase-config.js` 裡面的 Firebase 設定必須替換成你自己的專案資料。
+- `firestore.rules` 必須貼到 Firebase Console 的 Firestore Rules。
+- Google Drive 若要讓附件進入「承辦人自己的 Drive」，建議每位承辦人建立自己的 Apps Script Web App URL，並貼到案件設定。

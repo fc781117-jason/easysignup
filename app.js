@@ -1,0 +1,940 @@
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  onAuthStateChanged,
+  signOut
+} from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js';
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  orderBy,
+  serverTimestamp
+} from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js';
+
+const CONFIG = window.APP_CONFIG || {};
+const ADMIN_EMAIL = CONFIG.systemAdminEmail || 'fc781117@gmail.com';
+const STORAGE_KEY = 'fire-registration-app-v1';
+
+const OUTSIDE_PLACEHOLDER = '外部單位不列入統計';
+const FIELD = {
+  applicantName: '姓名',
+  phone: '電話',
+  email: '電子郵件',
+  gender: '性別',
+  age: '年齡',
+  unitGroup: '單位類型',
+  unit: '單位',
+  subUnit: '分隊／科室',
+  dutyType: '內外勤',
+  position: '職稱',
+  parkingNeed: '是否需要停車',
+  parkingStatus: '停車序位',
+  meal: '餐食',
+  note: '備註'
+};
+
+const FIREFIGHTER_UNITS = {
+  field: [
+    '第一救災救護大隊','第二救災救護大隊','第三救災救護大隊','第四救災救護大隊','第五救災救護大隊','第六救災救護大隊','第七救災救護大隊','第八救災救護大隊','第九救災救護大隊','特搜大隊'
+  ],
+  office: [
+    '救災救護指揮中心','車輛保養中心','火災預防科','災害搶救科','緊急救護科','教育訓練科','火災鑑識中心','危險物品管理科','民力運用科','整備應變科','消防宣導科','資通管考科','減災規劃科','秘書室','人事室','會計室','政風室','督察室'
+  ]
+};
+
+const POSITIONS = {
+  field: ['隊員','小隊長','分隊長','護理師','中隊長','組長','組員','副大隊長','大隊長'],
+  office: ['隊員','護理師','科員','股長','專員','秘書','主任','科長','簡任技正','專門委員','副局長','局長']
+};
+
+const CASE_TYPES = ['訓練報名','講習報名','會議報名','甄選報名'];
+
+let firebaseApp = null;
+let auth = null;
+let db = null;
+let usingFirebase = false;
+let usingDemoMode = false;
+let currentUser = null;
+let driveAccessToken = null;
+let cases = [];
+let registrations = [];
+let selectedCaseId = '';
+let reportCaseId = '';
+let dashboardChart = null;
+let reportCharts = [];
+
+const $ = (id) => document.getElementById(id);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const nowText = () => new Date().toLocaleString('zh-TW', { hour12: false });
+const safe = (value, fallback = '') => value === undefined || value === null ? fallback : String(value);
+const randomId = (len = 6) => Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, len).padEnd(len, 'X');
+const sanitizeFilename = (name) => safe(name).replace(/[\\/:*?"<>|]/g, '_');
+
+function validFirebaseConfig() {
+  const cfg = CONFIG.firebaseConfig || {};
+  return Boolean(cfg.apiKey && cfg.projectId && !cfg.apiKey.includes('PASTE_') && !cfg.projectId.includes('PASTE_'));
+}
+
+function validGoogleClient() {
+  return Boolean(CONFIG.googleOAuthClientId && !CONFIG.googleOAuthClientId.includes('PASTE_'));
+}
+
+async function init() {
+  $('adminEmailLabel').textContent = ADMIN_EMAIL;
+  $('settingsAdminEmail').textContent = ADMIN_EMAIL;
+  $('caseAgency').value = CONFIG.defaultAgencyName || '新北市政府消防局';
+  $('serialPrefix').value = CONFIG.defaultSerialPrefix || 'NTP-FIRE';
+  $('caseDeadline').value = todayISO();
+  $('caseCode').value = 'TRAIN';
+
+  if (validFirebaseConfig()) {
+    try {
+      firebaseApp = initializeApp(CONFIG.firebaseConfig);
+      auth = getAuth(firebaseApp);
+      db = getFirestore(firebaseApp);
+      usingFirebase = true;
+      usingDemoMode = false;
+      onAuthStateChanged(auth, async (user) => {
+        if (user) await afterLogin(makeUser(user));
+      });
+    } catch (err) {
+      console.error(err);
+      usingFirebase = false;
+      usingDemoMode = true;
+      toast('Firebase 初始化失敗，已切換 Demo 模式：' + err.message, 'warn');
+    }
+  } else {
+    usingDemoMode = true;
+  }
+
+  wireEvents();
+  renderTemplatePreview();
+  renderPositionRules();
+  renderEnvStatus();
+}
+
+function makeUser(user) {
+  return {
+    uid: user.uid || 'demo-admin',
+    name: user.displayName || user.email || '使用者',
+    email: user.email || ADMIN_EMAIL,
+    photoURL: user.photoURL || '',
+    role: user.email === ADMIN_EMAIL ? 'systemAdmin' : 'manager'
+  };
+}
+
+function demoUser() {
+  return {
+    uid: 'demo-admin',
+    name: '何健鳴',
+    email: ADMIN_EMAIL,
+    photoURL: '',
+    role: 'systemAdmin'
+  };
+}
+
+function wireEvents() {
+  $('googleLoginBtn').addEventListener('click', loginWithGoogle);
+  $('demoLoginBtn').addEventListener('click', async () => afterLogin(demoUser(), true));
+  $('logoutBtn').addEventListener('click', logout);
+  document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => showPage(btn.dataset.page)));
+  document.querySelectorAll('[data-jump]').forEach(btn => btn.addEventListener('click', () => showPage(btn.dataset.jump)));
+
+  $('caseAudience').addEventListener('change', renderTemplatePreview);
+  $('caseAgeBucketMode').addEventListener('change', () => $('customAgeWrap').classList.toggle('hidden', $('caseAgeBucketMode').value !== 'custom'));
+  $('resetCaseBtn').addEventListener('click', resetCaseEditor);
+  $('saveDraftBtn').addEventListener('click', () => saveCase('draft'));
+  $('publishCaseBtn').addEventListener('click', () => saveCase('open'));
+  $('caseSearch').addEventListener('input', renderCasesTable);
+  $('caseStatusFilter').addEventListener('change', renderCasesTable);
+
+  $('registrationCaseSelect').addEventListener('change', () => {
+    selectedCaseId = $('registrationCaseSelect').value;
+    renderRegistrationForm();
+  });
+  $('reportCaseSelect').addEventListener('change', () => {
+    reportCaseId = $('reportCaseSelect').value;
+    renderReports();
+  });
+  $('submitRegistrationBtn').addEventListener('click', submitRegistration);
+  $('attachmentInput').addEventListener('change', renderAttachmentInfo);
+  $('connectDriveBtn').addEventListener('click', requestDriveAccess);
+
+  $('exportExcelBtn').addEventListener('click', exportExcelWorkbook);
+  $('exportRosterPdfBtn').addEventListener('click', () => exportSimplePdf('signIn'));
+  $('exportMealPdfBtn').addEventListener('click', () => exportSimplePdf('meal'));
+  $('exportStatsPdfBtn').addEventListener('click', exportStatsPdf);
+  $('seedDemoBtn').addEventListener('click', seedDemoData);
+  $('clearDemoBtn').addEventListener('click', clearDemoData);
+}
+
+async function loginWithGoogle() {
+  if (!usingFirebase || !auth) {
+    if (CONFIG.allowDemoMode) {
+      toast('尚未完成 Firebase 設定，已使用 Demo 模式登入。', 'warn');
+      await afterLogin(demoUser(), true);
+      return;
+    }
+    toast('請先完成 Firebase 設定。', 'danger');
+    return;
+  }
+  try {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    const res = await signInWithPopup(auth, provider);
+    await afterLogin(makeUser(res.user));
+  } catch (err) {
+    toast('Google 登入失敗：' + err.message, 'danger');
+  }
+}
+
+async function afterLogin(user, demo = false) {
+  currentUser = user;
+  if (demo) usingDemoMode = true;
+  $('loginPage').classList.add('hidden');
+  $('appShell').classList.remove('hidden');
+  $('userName').textContent = user.name;
+  $('userRole').textContent = user.email === ADMIN_EMAIL ? '最高系統管理員（固定）' : '承辦人 / 報名者';
+  $('userAvatar').textContent = (user.name || user.email || '?').slice(0, 1).toUpperCase();
+  await ensureUserProfile(user);
+  await loadAllData();
+  renderAll();
+  toast('登入成功，歡迎使用。', 'ok');
+}
+
+async function logout() {
+  if (usingFirebase && auth) await signOut(auth).catch(() => {});
+  currentUser = null;
+  $('loginPage').classList.remove('hidden');
+  $('appShell').classList.add('hidden');
+  toast('已登出。');
+}
+
+async function ensureUserProfile(user) {
+  const profile = {
+    uid: user.uid,
+    name: user.name,
+    email: user.email,
+    role: user.email === ADMIN_EMAIL ? 'systemAdmin' : 'manager',
+    updatedAt: Date.now()
+  };
+  if (usingFirebase && db) {
+    await setDoc(doc(db, 'users', user.uid), { ...profile, updatedAt: serverTimestamp() }, { merge: true }).catch(console.warn);
+  } else {
+    const store = loadStore();
+    store.users = store.users || {};
+    store.users[user.uid] = profile;
+    saveStore(store);
+  }
+}
+
+function showPage(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === page));
+  document.querySelectorAll('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.page === page));
+  if (page === 'reports') renderReports();
+  if (page === 'dashboard') renderDashboard();
+}
+
+function renderAll() {
+  renderDashboard();
+  renderCasesTable();
+  renderCaseSelects();
+  renderRegistrationForm();
+  renderReports();
+  renderEnvStatus();
+}
+
+async function loadAllData() {
+  if (usingFirebase && db) {
+    const caseSnap = await getDocs(query(collection(db, 'cases'), orderBy('createdAt', 'desc'))).catch(async () => getDocs(collection(db, 'cases')));
+    cases = caseSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const regSnap = await getDocs(query(collection(db, 'registrations'), orderBy('submittedAt', 'desc'))).catch(async () => getDocs(collection(db, 'registrations')));
+    registrations = regSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } else {
+    const store = loadStore();
+    cases = store.cases || [];
+    registrations = store.registrations || [];
+    if (!cases.length) seedDemoData(false);
+    const store2 = loadStore();
+    cases = store2.cases || [];
+    registrations = store2.registrations || [];
+  }
+  selectedCaseId = selectedCaseId || (cases.find(c => c.status === 'open') || cases[0] || {}).id || '';
+  reportCaseId = reportCaseId || selectedCaseId;
+}
+
+function loadStore() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
+}
+function saveStore(store) { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
+
+function caseBase(status) {
+  const title = $('caseTitle').value.trim();
+  if (!title) throw new Error('請輸入案件標題。');
+  const audience = $('caseAudience').value;
+  const rawCode = $('caseCode').value.trim();
+  const caseCode = (rawCode || typeToCode($('caseType').value)).toUpperCase();
+  return {
+    agencyName: $('caseAgency').value.trim() || CONFIG.defaultAgencyName || '新北市政府消防局',
+    title,
+    type: $('caseType').value,
+    audience,
+    status,
+    deadline: $('caseDeadline').value || todayISO(),
+    quota: Number($('caseQuota').value || 0),
+    parkingSlots: Number($('caseParkingSlots').value || 0),
+    attachmentLimitMB: Number($('caseAttachmentLimit').value || 10),
+    attachmentMode: $('caseAttachmentMode').value,
+    ageBucketMode: $('caseAgeBucketMode').value,
+    customAgeBuckets: $('caseCustomAgeBuckets').value.trim(),
+    note: $('caseNote').value.trim(),
+    uploadMode: $('uploadMode').value,
+    uploadEndpoint: $('uploadEndpoint').value.trim(),
+    driveFolderName: $('driveFolderName').value.trim() || '消防局報名系統附件',
+    serialPrefix: $('serialPrefix').value.trim() || CONFIG.defaultSerialPrefix || 'NTP-FIRE',
+    caseCode,
+    createdBy: currentUser?.uid || 'demo-admin',
+    createdByEmail: currentUser?.email || ADMIN_EMAIL,
+    createdByName: currentUser?.name || '',
+    updatedAtMillis: Date.now()
+  };
+}
+
+function typeToCode(type) {
+  if (type === '訓練報名') return 'TRAIN';
+  if (type === '講習報名') return 'LECTURE';
+  if (type === '會議報名') return 'MEET';
+  if (type === '甄選報名') return 'SELECT';
+  return 'CASE';
+}
+
+async function saveCase(status) {
+  try {
+    const payload = caseBase(status);
+    if (usingFirebase && db) {
+      const docRef = await addDoc(collection(db, 'cases'), { ...payload, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      cases.unshift({ id: docRef.id, ...payload });
+    } else {
+      const store = loadStore();
+      store.cases = store.cases || [];
+      const id = 'case_' + randomId(8);
+      store.cases.unshift({ id, ...payload, createdAtMillis: Date.now() });
+      saveStore(store);
+      cases = store.cases;
+    }
+    toast(status === 'open' ? '案件已發布。' : '草稿已儲存。', 'ok');
+    resetCaseEditor(false);
+    await loadAllData();
+    renderAll();
+    showPage('cases');
+  } catch (err) {
+    toast(err.message, 'danger');
+  }
+}
+
+function resetCaseEditor(show = true) {
+  $('caseAgency').value = CONFIG.defaultAgencyName || '新北市政府消防局';
+  $('caseTitle').value = '';
+  $('caseType').value = '訓練報名';
+  $('caseAudience').value = 'internal';
+  $('caseDeadline').value = todayISO();
+  $('caseQuota').value = 0;
+  $('caseParkingSlots').value = 0;
+  $('caseAttachmentLimit').value = 10;
+  $('caseAttachmentMode').value = 'none';
+  $('caseAgeBucketMode').value = 'five';
+  $('caseCustomAgeBuckets').value = '';
+  $('caseNote').value = '請報名人確認資料正確。若需取消或補件，請於截止日前洽承辦人。';
+  $('uploadMode').value = 'appsScript';
+  $('uploadEndpoint').value = '';
+  $('driveFolderName').value = '消防局報名系統附件';
+  $('serialPrefix').value = CONFIG.defaultSerialPrefix || 'NTP-FIRE';
+  $('caseCode').value = 'TRAIN';
+  renderTemplatePreview();
+  if (show) toast('已清空案件編輯區。');
+}
+
+function renderTemplatePreview() {
+  const audience = $('caseAudience').value;
+  const fields = audience === 'internal'
+    ? ['姓名','電話','電子郵件','性別（男／女）','年齡','單位類型','單位','分隊／科室','內外勤','職稱','停車需求','餐食（葷／素）','備註']
+    : ['姓名','電話','電子郵件','性別（男／女）','年齡','停車需求','餐食（葷／素）','備註'];
+  $('templatePreview').innerHTML = `<div class="pill-row">${fields.map(f => `<span class="pill">${f}</span>`).join('')}</div>` +
+    `<div class="notice mt-3 ${audience === 'external' ? 'warn' : ''}">${audience === 'external' ? '外部報名模板會隱藏「單位」與「職稱」，且不列入單位／職稱統計。' : '內部報名模板會依內勤／外勤顯示不同職稱選項，並列入單位與職稱統計。'}</div>`;
+}
+
+function renderDashboard() {
+  const openCases = cases.filter(c => c.status === 'open').length;
+  const allRegs = registrations.length;
+  const parking = registrations.filter(r => r.formData?.parkingNeed === '需要停車').length;
+  const meals = registrations.filter(r => ['葷','素'].includes(r.formData?.meal)).length;
+  $('statOpenCases').textContent = openCases;
+  $('statRegistrations').textContent = allRegs;
+  $('statParkingNeed').textContent = parking;
+  $('statMealNeed').textContent = meals;
+
+  $('recentCases').innerHTML = cases.slice(0, 6).map(c => {
+    const count = countRegs(c.id);
+    return `<div class="item"><div><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}｜${c.audience === 'external' ? '外部' : '內部'}報名</small></div><div><span class="badge ${c.status}">${statusText(c.status)}</span><br><small class="muted">${count}/${c.quota || '不限'}</small></div></div>`;
+  }).join('') || '<div class="notice">尚無案件。</div>';
+
+  if (dashboardChart) dashboardChart.destroy();
+  const ctx = $('dashboardChart');
+  dashboardChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: cases.slice(0, 8).map(c => c.title.slice(0, 10)),
+      datasets: [{ label: '報名數', data: cases.slice(0, 8).map(c => countRegs(c.id)), borderRadius: 8 }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+  });
+}
+
+function statusText(status) {
+  return status === 'open' ? '開放中' : status === 'closed' ? '已截止' : '草稿';
+}
+
+function countRegs(caseId) { return registrations.filter(r => r.caseId === caseId).length; }
+
+function renderCasesTable() {
+  const keyword = $('caseSearch')?.value?.trim().toLowerCase() || '';
+  const status = $('caseStatusFilter')?.value || '';
+  const filtered = cases.filter(c => {
+    const text = `${c.title} ${c.type} ${c.agencyName}`.toLowerCase();
+    return (!keyword || text.includes(keyword)) && (!status || c.status === status);
+  });
+  $('caseTable').innerHTML = `<table class="data-table"><thead><tr><th>案件</th><th>模板</th><th>狀態</th><th>報名進度</th><th>停車位</th><th>截止日</th><th>操作</th></tr></thead><tbody>${filtered.map(c => {
+    const count = countRegs(c.id);
+    return `<tr><td><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}</small></td><td><span class="badge ${c.audience === 'external' ? 'orange' : 'blue'}">${c.audience === 'external' ? '外部' : '內部'}</span></td><td><span class="badge ${c.status}">${statusText(c.status)}</span></td><td>${count}/${c.quota || '不限'}</td><td>${c.parkingSlots || 0} 位</td><td>${safe(c.deadline)}</td><td><button class="btn btn-outline" data-fill="${c.id}">填寫</button> <button class="btn btn-secondary" data-report="${c.id}">統計</button></td></tr>`;
+  }).join('')}</tbody></table>`;
+  document.querySelectorAll('[data-fill]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.fill; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
+  document.querySelectorAll('[data-report]').forEach(btn => btn.addEventListener('click', () => { reportCaseId = btn.dataset.report; renderCaseSelects(); renderReports(); showPage('reports'); }));
+}
+
+function renderCaseSelects() {
+  const open = cases.filter(c => c.status === 'open');
+  const list = open.length ? open : cases;
+  const options = list.map(c => `<option value="${c.id}">${c.title}</option>`).join('');
+  $('registrationCaseSelect').innerHTML = options;
+  $('reportCaseSelect').innerHTML = cases.map(c => `<option value="${c.id}">${c.title}</option>`).join('');
+  if (selectedCaseId) $('registrationCaseSelect').value = selectedCaseId;
+  if (reportCaseId) $('reportCaseSelect').value = reportCaseId;
+}
+
+function getCase(id) { return cases.find(c => c.id === id); }
+
+function renderRegistrationForm() {
+  renderCaseSelects();
+  const c = getCase(selectedCaseId) || cases[0];
+  if (!c) {
+    $('registrationHeader').innerHTML = '<div class="notice">尚無可報名案件，請先新增案件。</div>';
+    $('registrationForm').innerHTML = '';
+    return;
+  }
+  selectedCaseId = c.id;
+  $('registrationCaseSelect').value = c.id;
+  const count = countRegs(c.id);
+  $('registrationHeader').innerHTML = `<h3>${safe(c.title)}</h3><p>${safe(c.agencyName)}｜${safe(c.type)}｜截止日：${safe(c.deadline)}｜名額：${count}/${c.quota || '不限'}</p>`;
+  $('parkingNotice').innerHTML = `本案承辦人設定停車位 <strong>${c.parkingSlots || 0}</strong> 位；需要停車者依送出時間先後分配，額滿後自動列為候補。`;
+
+  const isExternal = c.audience === 'external';
+  const internalFields = isExternal ? '' : `
+    <label>${FIELD.unitGroup}<select name="unitGroup" required><option value="field">外勤單位</option><option value="office">內勤科室</option></select></label>
+    <label>${FIELD.unit}<select name="unit" required></select></label>
+    <label>${FIELD.subUnit}<input name="subUnit" placeholder="例如：板橋分隊、救護股、承辦科室" /></label>
+    <label>${FIELD.dutyType}<select name="dutyType" required><option value="field">外勤</option><option value="office">內勤</option></select></label>
+    <label>${FIELD.position}<select name="position" required></select></label>`;
+
+  $('registrationForm').innerHTML = `
+    <label>${FIELD.applicantName}<input name="applicantName" required placeholder="請輸入姓名" /></label>
+    <label>${FIELD.phone}<input name="phone" required placeholder="請輸入聯絡電話" /></label>
+    <label>${FIELD.email}<input name="email" type="email" placeholder="請輸入電子郵件" value="${currentUser?.email || ''}" /></label>
+    <label>${FIELD.gender}<select name="gender" required><option value="男">男</option><option value="女">女</option></select></label>
+    <label>${FIELD.age}<input name="age" type="number" min="0" max="120" required placeholder="請輸入年齡" /></label>
+    ${internalFields}
+    <label>${FIELD.parkingNeed}<select name="parkingNeed"><option>不需要停車</option><option>需要停車</option></select></label>
+    <label>${FIELD.meal}<select name="meal"><option>葷</option><option>素</option><option>不需餐食</option></select></label>
+    <label class="full">${FIELD.note}<textarea name="note" rows="3" placeholder="特殊需求或補充事項"></textarea></label>
+  `;
+
+  const form = $('registrationForm');
+  if (!isExternal) {
+    const updateUnitOptions = () => {
+      const group = form.unitGroup.value;
+      form.unit.innerHTML = FIREFIGHTER_UNITS[group].map(u => `<option>${u}</option>`).join('');
+    };
+    const updatePositionOptions = () => {
+      const duty = form.dutyType.value;
+      form.position.innerHTML = POSITIONS[duty].map(p => `<option>${p}</option>`).join('');
+    };
+    form.unitGroup.addEventListener('change', updateUnitOptions);
+    form.dutyType.addEventListener('change', updatePositionOptions);
+    updateUnitOptions();
+    updatePositionOptions();
+  }
+}
+
+function renderAttachmentInfo() {
+  const input = $('attachmentInput');
+  const file = input.files?.[0];
+  if (!file) {
+    $('attachmentInfo').textContent = '尚未選擇附件。';
+    return;
+  }
+  const c = getCase(selectedCaseId);
+  const limit = (c?.attachmentLimitMB || 10) * 1024 * 1024;
+  if (file.size > limit) {
+    $('attachmentInfo').className = 'notice danger mt-3';
+    $('attachmentInfo').textContent = `檔案大小超過 ${c?.attachmentLimitMB || 10} MB，請重新選擇。`;
+    input.value = '';
+    return;
+  }
+  $('attachmentInfo').className = 'notice ok mt-3';
+  $('attachmentInfo').innerHTML = `已選擇：<strong>${file.name}</strong>（${(file.size / 1024 / 1024).toFixed(2)} MB）`;
+}
+
+async function submitRegistration() {
+  const c = getCase(selectedCaseId);
+  if (!c) return toast('找不到案件。', 'danger');
+  if (c.status !== 'open') return toast('此案件目前未開放報名。', 'danger');
+  const form = $('registrationForm');
+  if (!form.reportValidity()) return;
+  const formData = Object.fromEntries(new FormData(form).entries());
+  if (c.audience === 'external') {
+    formData.unitGroup = 'external';
+    formData.unit = OUTSIDE_PLACEHOLDER;
+    formData.subUnit = '';
+    formData.dutyType = 'external';
+    formData.position = '';
+  }
+  const file = $('attachmentInput').files?.[0] || null;
+  if (c.attachmentMode === 'required' && !file) return toast('本案要求上傳附件，請先選擇附件。', 'danger');
+  const serialNo = generateSerial(c);
+  const parkingStatus = assignParkingStatus(c, formData.parkingNeed);
+  formData.parkingStatus = parkingStatus;
+  let attachment = null;
+  if (file) attachment = await uploadAttachmentToDriveOrDemo(file, c, serialNo);
+
+  const payload = {
+    caseId: c.id,
+    serialNo,
+    applicantName: formData.applicantName,
+    applicantEmail: formData.email || currentUser?.email || '',
+    createdBy: currentUser?.uid || '',
+    createdByEmail: currentUser?.email || '',
+    formData,
+    attachment,
+    submittedAtMillis: Date.now()
+  };
+
+  if (usingFirebase && db) {
+    const docRef = await addDoc(collection(db, 'registrations'), { ...payload, submittedAt: serverTimestamp() });
+    registrations.unshift({ id: docRef.id, ...payload });
+  } else {
+    const store = loadStore();
+    store.registrations = store.registrations || [];
+    store.registrations.unshift({ id: 'reg_' + randomId(8), ...payload });
+    saveStore(store);
+    registrations = store.registrations;
+  }
+  $('attachmentInput').value = '';
+  renderAttachmentInfo();
+  await loadAllData();
+  renderAll();
+  await exportRegistrationPdf(payload, c);
+  toast(`報名完成，序號：${serialNo}；${parkingStatus}`, 'ok');
+  showPage('reports');
+}
+
+function generateSerial(c) {
+  const date = new Date().toISOString().slice(0,10).replaceAll('-', '');
+  return `${c.serialPrefix || 'NTP-FIRE'}-${c.caseCode || 'CASE'}-${date}-${randomId(4)}`;
+}
+
+function assignParkingStatus(c, parkingNeed) {
+  if (parkingNeed !== '需要停車') return '不需停車';
+  const slots = Number(c.parkingSlots || 0);
+  const usedBefore = registrations.filter(r => r.caseId === c.id && r.formData?.parkingNeed === '需要停車').length;
+  if (slots <= 0) return `候補第 ${usedBefore + 1} 位（本案未設定可用車位）`;
+  if (usedBefore < slots) return `正取第 ${usedBefore + 1} 車位`;
+  return `候補第 ${usedBefore - slots + 1} 位`;
+}
+
+async function requestDriveAccess() {
+  if (usingDemoMode || !validGoogleClient()) {
+    $('driveStatus').className = 'notice warn mt-3';
+    $('driveStatus').innerHTML = 'Demo 模式或尚未填入 Google OAuth Client ID：附件將以模擬方式記錄，不會真正上傳。';
+    toast('Drive 尚未正式連接，使用 Demo 模式。', 'warn');
+    return null;
+  }
+  if (!window.google?.accounts?.oauth2) {
+    toast('Google Identity Services 尚未載入，請稍後再試。', 'warn');
+    return null;
+  }
+  return new Promise((resolve, reject) => {
+    const tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: CONFIG.googleOAuthClientId,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: (tokenResponse) => {
+        if (tokenResponse.error) {
+          reject(tokenResponse);
+          return;
+        }
+        driveAccessToken = tokenResponse.access_token;
+        $('driveStatus').className = 'notice ok mt-3';
+        $('driveStatus').innerHTML = '已取得 Google Drive 授權。附件會上傳至承辦人自己的 Google Drive。';
+        toast('Google Drive 已連接。', 'ok');
+        resolve(driveAccessToken);
+      }
+    });
+    tokenClient.requestAccessToken({ prompt: 'consent' });
+  }).catch(err => {
+    console.error(err);
+    toast('Drive 授權失敗。', 'danger');
+    return null;
+  });
+}
+
+async function uploadAttachmentToDriveOrDemo(file, c, serialNo) {
+  if (c.uploadMode === 'appsScript' && c.uploadEndpoint) {
+    return uploadAttachmentToAppsScript(file, c, serialNo);
+  }
+  if (c.uploadMode === 'appsScript' && !c.uploadEndpoint) {
+    toast('本案設定為承辦人 Drive，但尚未填 Apps Script 上傳網址；已改用 Demo 記錄。', 'warn');
+    return { mode: 'demo', fileName: file.name, size: file.size, uploadedAt: nowText(), reason: 'missing_apps_script_endpoint' };
+  }
+  if (!driveAccessToken) await requestDriveAccess();
+  if (!driveAccessToken) {
+    return { mode: 'demo', fileName: file.name, size: file.size, uploadedAt: nowText() };
+  }
+  const metadata = {
+    name: `${sanitizeFilename(c.title)}_${serialNo}_${sanitizeFilename(file.name)}`,
+    mimeType: file.type || 'application/octet-stream'
+  };
+  const boundary = 'fire_registration_boundary_' + Date.now();
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+  const reader = await file.arrayBuffer();
+  const multipartRequestBody = new Blob([
+    delimiter,
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+    JSON.stringify(metadata),
+    delimiter,
+    `Content-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`,
+    reader,
+    closeDelimiter
+  ], { type: `multipart/related; boundary=${boundary}` });
+
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${driveAccessToken}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body: multipartRequestBody
+  });
+  if (!res.ok) throw new Error('Google Drive 上傳失敗：' + await res.text());
+  const data = await res.json();
+  return { mode: 'drive', fileName: file.name, size: file.size, driveFileId: data.id, webViewLink: data.webViewLink || '', uploadedAt: nowText() };
+}
+
+
+async function uploadAttachmentToAppsScript(file, c, serialNo) {
+  const base64 = await fileToBase64(file);
+  const payload = {
+    serialNo,
+    caseTitle: c.title,
+    folderName: c.driveFolderName || '消防局報名系統附件',
+    fileName: file.name,
+    mimeType: file.type || 'application/octet-stream',
+    fileBase64: base64.split(',')[1] || base64,
+    uploadedAt: nowText()
+  };
+  try {
+    const res = await fetch(c.uploadEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'Apps Script 上傳失敗');
+    return { mode: 'appsScript', fileName: file.name, size: file.size, driveFileId: data.fileId || '', webViewLink: data.webViewLink || '', uploadedAt: nowText() };
+  } catch (err) {
+    console.warn(err);
+    toast('Apps Script 上傳未取得確認，已保留本次附件紀錄。請承辦人檢查 Drive 資料夾。', 'warn');
+    return { mode: 'appsScript_unconfirmed', fileName: file.name, size: file.size, uploadedAt: nowText(), error: err.message };
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function registrationsFor(caseId) { return registrations.filter(r => r.caseId === caseId); }
+
+function renderReports() {
+  renderCaseSelects();
+  const c = getCase(reportCaseId) || cases[0];
+  if (!c) return;
+  reportCaseId = c.id;
+  $('reportCaseSelect').value = c.id;
+  const regs = registrationsFor(c.id);
+  $('reportTotal').textContent = regs.length;
+  $('reportParking').textContent = regs.filter(r => r.formData?.parkingNeed === '需要停車').length;
+  $('reportMealMeat').textContent = regs.filter(r => r.formData?.meal === '葷').length;
+  $('reportMealVeg').textContent = regs.filter(r => r.formData?.meal === '素').length;
+  renderRegistrationsTable(regs, c);
+  renderReportCharts(regs, c);
+}
+
+function renderRegistrationsTable(regs, c) {
+  $('registrationsTable').innerHTML = `<table class="data-table"><thead><tr><th>序號</th><th>姓名</th><th>單位</th><th>職稱</th><th>性別</th><th>年齡</th><th>停車</th><th>餐食</th><th>附件</th></tr></thead><tbody>${regs.map(r => `<tr><td><small>${safe(r.serialNo)}</small></td><td><strong>${safe(r.formData?.applicantName)}</strong></td><td>${c.audience === 'external' ? '<span class="badge gray">外部不統計</span>' : safe(r.formData?.unit)}</td><td>${safe(r.formData?.position)}</td><td>${safe(r.formData?.gender)}</td><td>${safe(r.formData?.age)}</td><td>${safe(r.formData?.parkingStatus)}</td><td>${safe(r.formData?.meal)}</td><td>${r.attachment ? '有' : '無'}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function renderReportCharts(regs, c) {
+  reportCharts.forEach(ch => ch.destroy());
+  reportCharts = [];
+  const chartDefs = [
+    ['genderChart', '性別', countBy(regs, r => r.formData?.gender || '未填')],
+    ['unitChart', '單位', c.audience === 'external' ? { '外部單位不統計': regs.length } : countBy(regs, r => r.formData?.unit || '未填')],
+    ['positionChart', '職稱', c.audience === 'external' ? { '外部人員不填職稱': regs.length } : countBy(regs, r => `${r.formData?.dutyType === 'office' ? '內勤' : '外勤'}-${r.formData?.position || '未填'}`)],
+    ['ageChart', '年齡', countBy(regs, r => ageBucket(Number(r.formData?.age || 0), c))]
+  ];
+  chartDefs.forEach(([id, label, obj]) => {
+    const labels = Object.keys(obj);
+    const values = Object.values(obj);
+    const chart = new Chart($(id), {
+      type: id === 'unitChart' || id === 'positionChart' || id === 'ageChart' ? 'bar' : 'doughnut',
+      data: { labels, datasets: [{ label, data: values, borderWidth: 1, borderRadius: 8 }] },
+      options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: id === 'genderChart' ? {} : { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+    });
+    reportCharts.push(chart);
+  });
+}
+
+function countBy(list, getter) {
+  return list.reduce((acc, item) => {
+    const key = getter(item) || '未填';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function ageBucket(age, c) {
+  if (!age) return '未填';
+  if (c.ageBucketMode === 'custom' && c.customAgeBuckets) {
+    const parts = c.customAgeBuckets.split(',').map(s => s.trim()).filter(Boolean);
+    for (const p of parts) {
+      if (p.endsWith('+')) {
+        const min = Number(p.replace('+',''));
+        if (age >= min) return p;
+      } else if (p.includes('-')) {
+        const [min, max] = p.split('-').map(Number);
+        if (age >= min && age <= max) return p;
+      }
+    }
+    return '其他';
+  }
+  const start = Math.floor(age / 5) * 5;
+  return `${start}-${start + 4}歲`;
+}
+
+function exportExcelWorkbook() {
+  const c = getCase(reportCaseId);
+  if (!c) return toast('請先選擇案件。', 'danger');
+  const regs = registrationsFor(c.id);
+  const wb = XLSX.utils.book_new();
+  const main = regs.map((r, i) => rowForExport(r, c, i + 1));
+  const sign = regs.map((r, i) => ({ 序號: i + 1, 單位: unitText(r, c), 職稱: r.formData?.position || '', 姓名: r.formData?.applicantName || '', 簽到: '', 簽退: '' }));
+  const meal = regs.filter(r => ['葷','素'].includes(r.formData?.meal)).map((r, i) => ({ 序號: i + 1, 單位: unitText(r, c), 職稱: r.formData?.position || '', 姓名: r.formData?.applicantName || '', 餐食: r.formData?.meal || '', 簽收欄位: '' }));
+  const parking = regs.filter(r => r.formData?.parkingNeed === '需要停車').map((r, i) => ({ 序號: i + 1, 姓名: r.formData?.applicantName || '', 單位: unitText(r, c), 電話: r.formData?.phone || '', 停車序位: r.formData?.parkingStatus || '' }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(main), '報名名冊');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sign), '簽到表');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(meal), '餐食簽收');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(parking), '停車名冊');
+  XLSX.writeFile(wb, `${sanitizeFilename(c.title)}_名冊.xlsx`);
+  toast('Excel 已產出。', 'ok');
+}
+
+function rowForExport(r, c, index) {
+  return {
+    序號: index,
+    系統序號: r.serialNo,
+    姓名: r.formData?.applicantName || '',
+    電話: r.formData?.phone || '',
+    電子郵件: r.formData?.email || '',
+    性別: r.formData?.gender || '',
+    年齡: r.formData?.age || '',
+    單位: unitText(r, c),
+    分隊科室: r.formData?.subUnit || '',
+    內外勤: dutyText(r.formData?.dutyType),
+    職稱: r.formData?.position || '',
+    停車需求: r.formData?.parkingNeed || '',
+    停車序位: r.formData?.parkingStatus || '',
+    餐食: r.formData?.meal || '',
+    備註: r.formData?.note || '',
+    附件: r.attachment?.webViewLink || r.attachment?.fileName || '',
+    報名時間: r.submittedAtMillis ? new Date(r.submittedAtMillis).toLocaleString('zh-TW', { hour12: false }) : ''
+  };
+}
+
+function unitText(r, c) {
+  if (c.audience === 'external') return OUTSIDE_PLACEHOLDER;
+  return [r.formData?.unit, r.formData?.subUnit].filter(Boolean).join('／');
+}
+function dutyText(v) { return v === 'office' ? '內勤' : v === 'field' ? '外勤' : ''; }
+
+async function exportRegistrationPdf(reg, c) {
+  const rows = [
+    ['系統序號', reg.serialNo], ['姓名', reg.formData.applicantName], ['電話', reg.formData.phone], ['電子郵件', reg.formData.email], ['性別', reg.formData.gender], ['年齡', reg.formData.age],
+    ['單位', unitText(reg, c)], ['職稱', reg.formData.position || (c.audience === 'external' ? '外部人員不填寫' : '')], ['停車需求', reg.formData.parkingNeed], ['停車序位', reg.formData.parkingStatus], ['餐食', reg.formData.meal], ['備註', reg.formData.note || '']
+  ];
+  await renderPdfPage({ title: `${c.title}｜正式報名表`, agency: c.agencyName, serial: reg.serialNo, rows, note: c.note, footer: '本文件由消防局多功能報名系統自動產出，可作為公文系統附件。', filename: `${sanitizeFilename(c.title)}_${reg.serialNo}_報名表.pdf`, signature: true });
+}
+
+async function exportSimplePdf(type) {
+  const c = getCase(reportCaseId);
+  if (!c) return;
+  const regs = registrationsFor(c.id);
+  const isMeal = type === 'meal';
+  const list = isMeal ? regs.filter(r => ['葷','素'].includes(r.formData?.meal)) : regs;
+  const rows = list.map((r, i) => isMeal
+    ? [`${i + 1}`, unitText(r, c), r.formData?.position || '', r.formData?.applicantName || '', r.formData?.meal || '', '']
+    : [`${i + 1}`, unitText(r, c), r.formData?.position || '', r.formData?.applicantName || '', '', '']
+  );
+  const headers = isMeal ? ['序號','單位','職稱','姓名','餐食（葷素）','簽收欄位'] : ['序號','單位','職稱','姓名','簽到','簽退'];
+  await renderListPdf({ agency: c.agencyName, title: `${c.title}｜${isMeal ? '餐食簽收表' : '簽到表'}`, headers, rows, filename: `${sanitizeFilename(c.title)}_${isMeal ? '餐食簽收表' : '簽到表'}.pdf` });
+}
+
+async function exportStatsPdf() {
+  const c = getCase(reportCaseId);
+  if (!c) return;
+  const regs = registrationsFor(c.id);
+  const stats = buildStatsRows(regs, c);
+  await renderPdfPage({ title: `${c.title}｜統計報告`, agency: c.agencyName, serial: '統計輸出', rows: stats, note: '本統計排除外部單位之單位／職稱分析；外部報名案件不顯示單位與職稱欄位。', footer: `產出時間：${nowText()}`, filename: `${sanitizeFilename(c.title)}_統計報告.pdf`, signature: false });
+}
+
+function buildStatsRows(regs, c) {
+  const gender = countBy(regs, r => r.formData?.gender || '未填');
+  const meals = countBy(regs, r => r.formData?.meal || '未填');
+  const parking = countBy(regs, r => r.formData?.parkingStatus?.startsWith('正取') ? '停車正取' : r.formData?.parkingStatus?.startsWith('候補') ? '停車候補' : '不需停車');
+  const age = countBy(regs, r => ageBucket(Number(r.formData?.age || 0), c));
+  return [
+    ['報名總人數', String(regs.length)],
+    ['性別統計', objText(gender)],
+    ['餐食需求', objText(meals)],
+    ['停車需求', objText(parking)],
+    ['年齡區間', objText(age)],
+    ['單位統計', c.audience === 'external' ? '外部報名案件：不統計單位。' : objText(countBy(regs, r => r.formData?.unit || '未填'))],
+    ['職稱統計', c.audience === 'external' ? '外部報名案件：不填寫職稱。' : objText(countBy(regs, r => `${dutyText(r.formData?.dutyType)}-${r.formData?.position || '未填'}`))]
+  ];
+}
+
+function objText(obj) { return Object.entries(obj).map(([k,v]) => `${k}：${v}`).join('；'); }
+
+async function renderPdfPage({ title, agency, serial, rows, note, footer, filename, signature }) {
+  const box = $('pdfCanvas');
+  box.innerHTML = `<div class="pdf-page"><div class="pdf-header"><div><small>${safe(agency)}</small><h1>${safe(title)}</h1></div><div class="serial-box"><div style="font-size:11px;opacity:.8">序號</div><div>${safe(serial)}</div></div></div><table class="pdf-table"><tbody>${rows.map(([k,v]) => `<tr><th>${safe(k)}</th><td>${safe(v)}</td></tr>`).join('')}</tbody></table><div class="notice mt-4">${safe(note)}</div>${signature ? `<div class="signature-grid"><div class="signature-line">報名人簽名</div><div class="signature-line">承辦人核章</div><div class="signature-line">單位主管批示</div></div>` : ''}<div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>${safe(footer)}</span></div></div>`;
+  await savePdfFromElement(box.firstElementChild, filename);
+}
+
+async function renderListPdf({ agency, title, headers, rows, filename }) {
+  const box = $('pdfCanvas');
+  box.innerHTML = `<div class="pdf-page"><div class="pdf-header"><div><small>${safe(agency)}</small><h1>${safe(title)}</h1></div><div class="serial-box"><div>${todayISO()}</div></div></div><table class="pdf-table"><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(v => `<td style="height:38px">${safe(v)}</td>`).join('')}</tr>`).join('')}</tbody></table><div class="pdf-footer"><span>產出日期：${todayISO()}</span><span>消防局多功能報名系統</span></div></div>`;
+  await savePdfFromElement(box.firstElementChild, filename);
+}
+
+async function savePdfFromElement(el, filename) {
+  toast('正在產出 PDF，請稍候。');
+  const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#fff' });
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const imgW = pageW;
+  const imgH = canvas.height * imgW / canvas.width;
+  let position = 0;
+  pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, position, imgW, imgH);
+  let heightLeft = imgH - pageH;
+  while (heightLeft > 0) {
+    position = heightLeft - imgH;
+    pdf.addPage();
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, position, imgW, imgH);
+    heightLeft -= pageH;
+  }
+  pdf.save(filename);
+  toast('PDF 已產出。', 'ok');
+}
+
+function renderEnvStatus() {
+  const rows = [
+    ['Firebase 狀態', usingFirebase ? '已設定' : '未設定／Demo 模式'],
+    ['Google Drive OAuth', validGoogleClient() ? '已填入 Client ID' : '尚未填入 Client ID'],
+    ['目前模式', usingDemoMode ? 'Demo/localStorage' : 'Firebase/Firestore'],
+    ['系統管理員', ADMIN_EMAIL],
+    ['Firestore 專案', CONFIG.firebaseConfig?.projectId || '未填寫']
+  ];
+  $('envStatus').innerHTML = rows.map(([k,v]) => `<div class="setting-row"><strong>${k}</strong><span>${v}</span></div>`).join('');
+}
+
+function renderPositionRules() {
+  $('positionRuleBox').innerHTML = `<div><strong>外勤：</strong>${POSITIONS.field.join('、')}</div><div><strong>內勤：</strong>${POSITIONS.office.join('、')}</div><div><strong>外部人員：</strong>不填寫單位與職稱，不列入單位／職稱統計。</div>`;
+}
+
+function seedDemoData(showToast = true) {
+  const demoCase = {
+    id: 'case_demo_001', agencyName: '新北市政府消防局', title: '114年度進階搶救技術訓練報名', type: '訓練報名', audience: 'internal', status: 'open', deadline: todayISO(), quota: 30, parkingSlots: 5, attachmentLimitMB: 10, attachmentMode: 'optional', ageBucketMode: 'five', customAgeBuckets: '', note: '請報名人確認資料正確。', uploadMode: 'appsScript', uploadEndpoint: '', driveFolderName: '消防局報名系統附件', serialPrefix: 'NTP-FIRE', caseCode: 'TRAIN', createdByEmail: ADMIN_EMAIL, createdAtMillis: Date.now()
+  };
+  const demoCase2 = {
+    id: 'case_demo_002', agencyName: '新北市政府消防局', title: '外部講習報名測試', type: '講習報名', audience: 'external', status: 'open', deadline: todayISO(), quota: 80, parkingSlots: 2, attachmentLimitMB: 10, attachmentMode: 'none', ageBucketMode: 'custom', customAgeBuckets: '18-24,25-29,30-34,35-39,40+', note: '外部人員不需填寫單位與職稱。', uploadMode: 'appsScript', uploadEndpoint: '', driveFolderName: '消防局報名系統附件', serialPrefix: 'NTP-FIRE', caseCode: 'LECTURE', createdByEmail: ADMIN_EMAIL, createdAtMillis: Date.now() - 1000
+  };
+  const demoRegs = [
+    { id:'reg_demo_1', caseId: demoCase.id, serialNo:'NTP-FIRE-TRAIN-20260520-A7K3', applicantName:'陳志遠', formData:{ applicantName:'陳志遠', phone:'0912-000-001', email:'chen@example.com', gender:'男', age:'33', unitGroup:'field', unit:'第三救災救護大隊', subUnit:'三重分隊', dutyType:'field', position:'小隊長', parkingNeed:'需要停車', parkingStatus:'正取第 1 車位', meal:'葷', note:'' }, submittedAtMillis:Date.now()-50000 },
+    { id:'reg_demo_2', caseId: demoCase.id, serialNo:'NTP-FIRE-TRAIN-20260520-B8Q2', applicantName:'林美珍', formData:{ applicantName:'林美珍', phone:'0912-000-002', email:'lin@example.com', gender:'女', age:'29', unitGroup:'office', unit:'緊急救護科', subUnit:'救護股', dutyType:'office', position:'科員', parkingNeed:'不需要停車', parkingStatus:'不需停車', meal:'素', note:'' }, submittedAtMillis:Date.now()-40000 },
+    { id:'reg_demo_3', caseId: demoCase2.id, serialNo:'NTP-FIRE-LECTURE-20260520-C9L1', applicantName:'王大明', formData:{ applicantName:'王大明', phone:'0912-000-003', email:'wang@example.com', gender:'男', age:'42', unitGroup:'external', unit:OUTSIDE_PLACEHOLDER, dutyType:'external', position:'', parkingNeed:'需要停車', parkingStatus:'正取第 1 車位', meal:'葷', note:'' }, submittedAtMillis:Date.now()-30000 }
+  ];
+  const store = loadStore();
+  store.cases = [demoCase, demoCase2];
+  store.registrations = demoRegs;
+  saveStore(store);
+  cases = store.cases;
+  registrations = store.registrations;
+  selectedCaseId = demoCase.id;
+  reportCaseId = demoCase.id;
+  renderAll();
+  if (showToast) toast('已建立示範資料。', 'ok');
+}
+
+function clearDemoData() {
+  localStorage.removeItem(STORAGE_KEY);
+  cases = [];
+  registrations = [];
+  selectedCaseId = '';
+  reportCaseId = '';
+  renderAll();
+  toast('本機 Demo 資料已清除。', 'ok');
+}
+
+function toast(message, type = '') {
+  const el = $('toast');
+  el.textContent = message;
+  el.className = `toast ${type ? 'toast-' + type : ''}`;
+  el.classList.remove('hidden');
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => el.classList.add('hidden'), 3800);
+}
+
+init();
