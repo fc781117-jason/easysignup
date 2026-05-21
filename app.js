@@ -321,7 +321,7 @@ async function afterLogin(user, demo = false) {
   renderAll();
   applyRoleNavigation();
   showPage('cases');
-  toast('登入成功，歡迎使用 V7 權限強化與案件管理修正版。', 'ok');
+  toast('登入成功，歡迎使用 V8 首頁操作簡化版。', 'ok');
 }
 
 function showApprovalPending() {
@@ -386,7 +386,7 @@ function showPage(page) {
   if (page === 'reports') {
     const c = getCase(reportCaseId);
     if (c && !canManageCase(c)) {
-      toast('您只能管理自己建立的案件；可查看案件並填寫／重新編輯自己的資料。', 'warn');
+      toast('您只能管理自己建立的案件；可查看案件並進行報名填寫。', 'warn');
       page = 'cases';
     }
   }
@@ -795,14 +795,11 @@ function renderCasesTable() {
   });
   $('caseTable').innerHTML = `<table class="data-table"><thead><tr><th>案件</th><th>模板</th><th>狀態</th><th>報名進度</th><th>停車位</th><th>截止日</th><th>操作</th></tr></thead><tbody>${filtered.map(c => {
     const count = countRegs(c.id);
-    const ownReg = ownRegistrationFor(c.id);
     const manageBtn = canManageCase(c) ? `<button class="btn btn-secondary" data-report="${c.id}">案件管理</button>` : '';
-    const reEditBtn = ownReg ? `<button class="btn btn-outline" data-reedit="${c.id}">重新編輯</button>` : `<button class="btn btn-outline" disabled>重新編輯</button>`;
     const fillBtn = c.status === 'open' ? `<button class="btn btn-outline" data-fill="${c.id}">報名填寫</button>` : `<button class="btn btn-outline" disabled>報名填寫</button>`;
-    return `<tr><td><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}｜承辦：${safe(c.createdByName || c.createdByEmail || '未記錄')}</small></td><td><span class="badge ${c.audience === 'external' ? 'orange' : 'blue'}">${c.audience === 'external' ? '外部' : '內部'}</span></td><td><span class="badge ${c.status}">${statusText(c.status)}</span></td><td>${count}/${c.quota || '不限'}</td><td>${c.parkingSlots || 0} 位</td><td>${safe(c.deadline)}</td><td><div class="case-action-group">${fillBtn}${reEditBtn}${manageBtn}</div></td></tr>`;
+    return `<tr><td><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}｜承辦：${safe(c.createdByName || c.createdByEmail || '未記錄')}</small></td><td><span class="badge ${c.audience === 'external' ? 'orange' : 'blue'}">${c.audience === 'external' ? '外部' : '內部'}</span></td><td><span class="badge ${c.status}">${statusText(c.status)}</span></td><td>${count}/${c.quota || '不限'}</td><td>${c.parkingSlots || 0} 位</td><td>${safe(c.deadline)}</td><td><div class="case-action-group">${fillBtn}${manageBtn}</div></td></tr>`;
   }).join('') || '<tr><td colspan="7"><div class="notice">目前沒有符合條件的案件。</div></td></tr>'}</tbody></table>`;
   document.querySelectorAll('[data-fill]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.fill; registrationEditingId = ''; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
-  document.querySelectorAll('[data-reedit]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.reedit; const reg = ownRegistrationFor(selectedCaseId); registrationEditingId = reg?.id || ''; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
   document.querySelectorAll('[data-report]').forEach(btn => btn.addEventListener('click', () => { reportCaseId = btn.dataset.report; renderCaseSelects(); showPage('reports'); }));
 }
 
@@ -1163,7 +1160,7 @@ function renderRegistrationsTable(regs, c) {
 }
 
 function renderReportCharts(regs, c) {
-  // V7 改用純 HTML/SVG 圖表，避免手機或隱藏分頁 canvas 初始化後呈現空白。
+  // V7 起改用純 HTML/SVG 圖表，避免手機或隱藏分頁 canvas 初始化後呈現空白。
   reportCharts.forEach(ch => ch.destroy?.());
   reportCharts = [];
   const panel = $('reportVisualCharts');
