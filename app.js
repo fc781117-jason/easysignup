@@ -24,7 +24,7 @@ import {
 
 const CONFIG = window.APP_CONFIG || {};
 const ADMIN_EMAIL = CONFIG.systemAdminEmail || 'fc781117@gmail.com';
-const STORAGE_KEY = 'fire-registration-app-v3'; // 保留 V3 key，避免使用者更新後 Demo 資料消失
+const STORAGE_KEY = 'fire-registration-app-v3'; // 保留既有 Demo 資料
 
 const OUTSIDE_PLACEHOLDER = '外部單位不列入統計';
 const FIELD = {
@@ -87,6 +87,7 @@ let currentUser = null;
 let driveAccessToken = null;
 let cases = [];
 let registrations = [];
+let users = [];
 let selectedCaseId = '';
 let reportCaseId = '';
 let dashboardChart = null;
@@ -214,6 +215,7 @@ async function init() {
   renderTemplatePreview();
   renderPositionRules();
   renderEnvStatus();
+  renderUserApprovalPanel();
   applyRoleNavigation();
 }
 
@@ -241,6 +243,7 @@ function wireEvents() {
   $('googleLoginBtn').addEventListener('click', loginWithGoogle);
   $('demoLoginBtn').addEventListener('click', async () => afterLogin(demoUser(), true));
   $('logoutBtn').addEventListener('click', logout);
+  $('pendingLogoutBtn')?.addEventListener('click', logout);
   document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => showPage(btn.dataset.page)));
   document.querySelectorAll('[data-jump]').forEach(btn => btn.addEventListener('click', () => showPage(btn.dataset.jump)));
 
@@ -299,47 +302,86 @@ async function loginWithGoogle() {
 async function afterLogin(user, demo = false) {
   currentUser = user;
   if (demo) usingDemoMode = true;
-  $('loginPage').classList.add('hidden');
-  $('appShell').classList.remove('hidden');
-  $('userName').textContent = user.name;
-  $('userRole').textContent = user.email === ADMIN_EMAIL ? '最高系統管理員（固定）' : '承辦人 / 報名者';
-  $('userAvatar').textContent = (user.name || user.email || '?').slice(0, 1).toUpperCase();
   await ensureUserProfile(user);
+
+  if (!isSystemAdmin() && currentUser.approvalStatus !== 'approved') {
+    showApprovalPending();
+    toast('您的帳號尚未核准，請等待最高系統管理員審核。', 'warn');
+    return;
+  }
+
+  $('loginPage').classList.add('hidden');
+  $('approvalPage')?.classList.add('hidden');
+  $('appShell').classList.remove('hidden');
+  $('userName').textContent = currentUser.name;
+  $('userRole').textContent = isSystemAdmin() ? '最高系統管理員（固定）' : '已核准使用者';
+  $('userAvatar').textContent = (currentUser.name || currentUser.email || '?').slice(0, 1).toUpperCase();
   await loadAllData();
   renderAll();
   applyRoleNavigation();
-  showPage(isSystemAdmin() ? 'dashboard' : 'cases');
-  toast('登入成功，歡迎使用 V5 PDF 版面與統計視覺優化版。', 'ok');
+  showPage('cases');
+  toast('登入成功，歡迎使用 V6 權限審核與首頁整合版。', 'ok');
+}
+
+function showApprovalPending() {
+  $('loginPage').classList.add('hidden');
+  $('appShell').classList.add('hidden');
+  $('approvalPage')?.classList.remove('hidden');
+  if ($('approvalStatusText')) $('approvalStatusText').textContent = currentUser?.approvalStatus === 'rejected' ? '未核准／停用' : '待審核';
 }
 
 async function logout() {
   if (usingFirebase && auth) await signOut(auth).catch(() => {});
   currentUser = null;
   $('loginPage').classList.remove('hidden');
+  $('approvalPage')?.classList.add('hidden');
   $('appShell').classList.add('hidden');
   toast('已登出。');
 }
 
 async function ensureUserProfile(user) {
-  const profile = {
+  const admin = user.email === ADMIN_EMAIL;
+  let profile = {
     uid: user.uid,
     name: user.name,
     email: user.email,
-    role: user.email === ADMIN_EMAIL ? 'systemAdmin' : 'manager',
-    updatedAt: Date.now()
+    role: admin ? 'systemAdmin' : 'manager',
+    status: admin ? 'approved' : 'pending',
+    approvalStatus: admin ? 'approved' : 'pending',
+    updatedAtMillis: Date.now()
   };
+
   if (usingFirebase && db) {
-    await setDoc(doc(db, 'users', user.uid), { ...profile, updatedAt: serverTimestamp() }, { merge: true }).catch(console.warn);
+    const ref = doc(db, 'users', user.uid);
+    const snap = await getDoc(ref).catch(() => null);
+    if (snap?.exists()) {
+      const existing = snap.data();
+      profile = { ...profile, ...existing, uid: user.uid, name: user.name || existing.name, email: user.email || existing.email };
+      if (admin) { profile.role = 'systemAdmin'; profile.status = 'approved'; }
+      await setDoc(ref, { name: profile.name, email: profile.email, role: profile.role, status: profile.status, lastLoginAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true }).catch(console.warn);
+    } else {
+      await setDoc(ref, { ...profile, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastLoginAt: serverTimestamp() }, { merge: true }).catch(console.warn);
+    }
   } else {
     const store = loadStore();
     store.users = store.users || {};
+    const existing = store.users[user.uid] || {};
+    profile = { ...profile, ...existing, uid: user.uid, name: user.name, email: user.email };
+    if (admin) { profile.role = 'systemAdmin'; profile.status = 'approved'; }
     store.users[user.uid] = profile;
     saveStore(store);
   }
+
+  currentUser = {
+    ...currentUser,
+    role: profile.role,
+    approvalStatus: profile.status || profile.approvalStatus || (admin ? 'approved' : 'pending')
+  };
 }
 
 function showPage(page) {
-  if (!isSystemAdmin() && (page === 'dashboard' || page === 'settings')) page = 'cases';
+  if (page === 'dashboard') page = 'cases';
+  if (!isSystemAdmin() && page === 'settings') page = 'cases';
   if (page === 'reports') {
     const c = getCase(reportCaseId);
     if (c && !canManageCase(c)) {
@@ -367,23 +409,31 @@ function renderAll() {
   renderRegistrationForm();
   renderReports();
   renderEnvStatus();
+  renderUserApprovalPanel();
   applyRoleNavigation();
 }
 
 async function loadAllData() {
+  users = [];
   if (usingFirebase && db) {
     const caseSnap = await getDocs(query(collection(db, 'cases'), orderBy('createdAt', 'desc'))).catch(async () => getDocs(collection(db, 'cases')));
     cases = caseSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     const regSnap = await getDocs(query(collection(db, 'registrations'), orderBy('submittedAt', 'desc'))).catch(async () => getDocs(collection(db, 'registrations')));
     registrations = regSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (isSystemAdmin()) {
+      const userSnap = await getDocs(collection(db, 'users')).catch(() => ({ docs: [] }));
+      users = userSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
   } else {
     const store = loadStore();
     cases = store.cases || [];
     registrations = store.registrations || [];
+    users = Object.values(store.users || {});
     if (!cases.length) seedDemoData(false);
     const store2 = loadStore();
     cases = store2.cases || [];
     registrations = store2.registrations || [];
+    users = Object.values(store2.users || {});
   }
   selectedCaseId = selectedCaseId || (cases.find(c => c.status === 'open') || cases[0] || {}).id || '';
   reportCaseId = reportCaseId || selectedCaseId;
@@ -729,6 +779,8 @@ function statusText(status) {
 function countRegs(caseId) { return registrations.filter(r => r.caseId === caseId).length; }
 
 function renderCasesTable() {
+  if ($('homeOpenCases')) $('homeOpenCases').textContent = cases.filter(c => c.status === 'open').length;
+  if ($('homeClosedCases')) $('homeClosedCases').textContent = cases.filter(c => c.status === 'closed').length;
   const keyword = $('caseSearch')?.value?.trim().toLowerCase() || '';
   const status = $('caseStatusFilter')?.value || '';
   const filtered = cases.filter(c => {
@@ -740,7 +792,7 @@ function renderCasesTable() {
     const ownReg = ownRegistrationFor(c.id);
     const manageBtn = canManageCase(c) ? `<button class="btn btn-secondary" data-report="${c.id}">案件管理</button>` : '';
     const reEditBtn = ownReg ? `<button class="btn btn-outline" data-reedit="${c.id}">重新編輯</button>` : `<button class="btn btn-outline" disabled>重新編輯</button>`;
-    const fillBtn = c.status === 'open' ? `<button class="btn btn-outline" data-fill="${c.id}">填寫</button>` : `<button class="btn btn-outline" disabled>填寫</button>`;
+    const fillBtn = c.status === 'open' ? `<button class="btn btn-outline" data-fill="${c.id}">報名填寫</button>` : `<button class="btn btn-outline" disabled>報名填寫</button>`;
     return `<tr><td><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}｜承辦：${safe(c.createdByName || c.createdByEmail || '未記錄')}</small></td><td><span class="badge ${c.audience === 'external' ? 'orange' : 'blue'}">${c.audience === 'external' ? '外部' : '內部'}</span></td><td><span class="badge ${c.status}">${statusText(c.status)}</span></td><td>${count}/${c.quota || '不限'}</td><td>${c.parkingSlots || 0} 位</td><td>${safe(c.deadline)}</td><td><div class="case-action-group">${fillBtn}${reEditBtn}${manageBtn}</div></td></tr>`;
   }).join('') || '<tr><td colspan="7"><div class="notice">目前沒有符合條件的案件。</div></td></tr>'}</tbody></table>`;
   document.querySelectorAll('[data-fill]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.fill; registrationEditingId = ''; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
@@ -1471,6 +1523,51 @@ async function savePdfFromElement(el, filename, orientation = 'portrait') {
   } finally {
     setTimeout(() => hidePdfCanvas(), 300);
   }
+}
+
+async function updateUserApproval(uid, status) {
+  if (!isSystemAdmin()) return toast('只有最高系統管理員可以審核使用者。', 'warn');
+  const target = users.find(u => u.uid === uid || u.id === uid);
+  if (target?.email === ADMIN_EMAIL) return toast('最高系統管理員不可停用。', 'warn');
+  if (usingFirebase && db) {
+    await updateDoc(doc(db, 'users', uid), { status, updatedAt: serverTimestamp(), approvedBy: currentUser.email, approvedAt: serverTimestamp() });
+  } else {
+    const store = loadStore();
+    store.users = store.users || {};
+    store.users[uid] = { ...(store.users[uid] || target || {}), status, approvedBy: currentUser.email, approvedAtMillis: Date.now() };
+    saveStore(store);
+  }
+  await loadAllData();
+  renderUserApprovalPanel();
+  toast(status === 'approved' ? '已核准使用者。' : '已停用使用者。', 'ok');
+}
+
+function renderUserApprovalPanel() {
+  const panel = $('userApprovalPanel');
+  if (!panel) return;
+  if (!isSystemAdmin()) {
+    panel.innerHTML = '<div class="notice">此區僅最高系統管理員可查看。</div>';
+    return;
+  }
+  const sorted = [...users].sort((a, b) => {
+    const rank = (u) => u.email === ADMIN_EMAIL ? 0 : (u.status === 'pending' ? 1 : u.status === 'approved' ? 2 : 3);
+    return rank(a) - rank(b) || safe(a.email).localeCompare(safe(b.email));
+  });
+  if (!sorted.length) {
+    panel.innerHTML = '<div class="notice">尚無使用者資料。新帳號登入後會出現在這裡等待審核。</div>';
+    return;
+  }
+  panel.innerHTML = sorted.map(u => {
+    const uid = u.uid || u.id;
+    const status = u.email === ADMIN_EMAIL ? 'approved' : (u.status || u.approvalStatus || 'pending');
+    const badge = status === 'approved' ? '<span class="badge open">已核准</span>' : status === 'rejected' ? '<span class="badge closed">已停用</span>' : '<span class="badge draft">待審核</span>';
+    const actions = u.email === ADMIN_EMAIL ? '<span class="muted small">固定最高管理員</span>' : `
+      <button class="btn btn-secondary mini" data-approve-user="${uid}" ${status === 'approved' ? 'disabled' : ''}>核准</button>
+      <button class="btn btn-outline mini" data-reject-user="${uid}" ${status === 'rejected' ? 'disabled' : ''}>停用</button>`;
+    return `<div class="approval-row"><div><strong>${safe(u.name || u.email)}</strong><br><small class="muted">${safe(u.email)}｜${safe(uid)}</small></div><div>${badge}</div><div class="approval-actions">${actions}</div></div>`;
+  }).join('');
+  panel.querySelectorAll('[data-approve-user]').forEach(btn => btn.addEventListener('click', () => updateUserApproval(btn.dataset.approveUser, 'approved')));
+  panel.querySelectorAll('[data-reject-user]').forEach(btn => btn.addEventListener('click', () => updateUserApproval(btn.dataset.rejectUser, 'rejected')));
 }
 
 function renderEnvStatus() {

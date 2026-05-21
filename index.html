@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>消防局多功能報名系統 V5</title>
-  <link rel="stylesheet" href="./styles.css?v=4.0.0" />
-  <script src="./firebase-config.js?v=4.0.0"></script>
+  <title>消防局多功能報名系統 V6</title>
+  <link rel="stylesheet" href="./styles.css?v=6.0.0" />
+  <script src="./firebase-config.js?v=6.0.0"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -19,7 +19,7 @@
     <div class="login-card">
       <div class="brand-mark">🚒</div>
       <h1>消防局多功能報名系統</h1>
-      <p class="subtitle">Fire Department Registration Platform｜V5.0 PDF 版面與統計視覺優化版</p>
+      <p class="subtitle">Fire Department Registration Platform｜V6.0 權限審核與首頁整合版</p>
       <div class="feature-list">
         <div>✅ 承辦人自建案件與表單</div>
         <div>✅ 內部 / 外部報名模板分流</div>
@@ -33,13 +33,27 @@
     </div>
   </section>
 
+
+  <section id="approvalPage" class="login-shell hidden">
+    <div class="login-card approval-card">
+      <div class="brand-mark">⏳</div>
+      <h1>帳號待最高系統管理員審核</h1>
+      <p class="subtitle">您的 Google 帳號已完成登入，但尚未核准使用本報名系統。</p>
+      <div class="notice warn text-left">
+        <strong>目前狀態：</strong><span id="approvalStatusText">待審核</span><br />
+        請聯繫最高系統管理員核准後，再重新登入使用。
+      </div>
+      <button id="pendingLogoutBtn" class="btn btn-outline wide mt-3">登出並返回登入頁</button>
+    </div>
+  </section>
+
   <section id="appShell" class="app-shell hidden">
     <aside class="sidebar">
       <div class="side-brand">
         <span class="brand-icon">🚒</span>
         <div>
-          <strong>報名系統 V5</strong>
-          <small>Firebase / Drive Ready｜V5.0</small>
+          <strong>報名系統 V6</strong>
+          <small>Firebase / Drive Ready｜V6.0</small>
         </div>
       </div>
       <div class="user-card">
@@ -50,8 +64,7 @@
         </div>
       </div>
       <nav>
-        <button class="nav-item active" data-page="dashboard" data-role="admin">📊 儀表板</button>
-        <button class="nav-item" data-page="cases">📋 案件管理</button>
+        <button class="nav-item active" data-page="cases">🏠 首頁</button>
         <button class="nav-item" data-page="registration">✏️ 報名填寫</button>
         <button class="nav-item" data-page="settings" data-role="admin">⚙️ 系統設定</button>
       </nav>
@@ -86,12 +99,16 @@
       </section>
 
       <section id="cases" class="page">
-        <div class="page-head">
+        <div class="page-head compact-head">
           <div>
-            <h2>📋 案件管理</h2>
-            <p>管理訓練、講習、會議、甄選等報名案件；建立案件、編輯與刪除皆整合於此。</p>
+            <h2>🏠 首頁</h2>
+            <p>查看目前開放與已截止案件，並可直接進行報名填寫；建立、編輯與刪除案件整合於此。</p>
           </div>
           <button class="btn btn-primary" data-jump="caseEditor">＋ 新增案件</button>
+        </div>
+        <div class="compact-summary">
+          <div class="mini-stat red"><strong id="homeOpenCases">0</strong><span>開放中案件</span></div>
+          <div class="mini-stat"><strong id="homeClosedCases">0</strong><span>已截止案件</span></div>
         </div>
         <div class="card">
           <div class="toolbar">
@@ -303,6 +320,9 @@
           <div class="card form-card">
             <h3>固定系統管理員</h3>
             <p class="notice">系統管理員固定寫死為 <strong id="settingsAdminEmail"></strong>，此角色不提供一般介面更改。</p>
+            <h3 class="mt-4">使用者審核</h3>
+            <p class="small muted">除最高系統管理員外，所有 Google 登入帳號都必須先核准，才可使用系統。</p>
+            <div id="userApprovalPanel" class="small-list"></div>
             <h3 class="mt-4">內建職稱規則</h3>
             <div id="positionRuleBox" class="small-list"></div>
           </div>
@@ -313,6 +333,6 @@
 
   <div id="pdfCanvas" class="pdf-canvas hidden" aria-hidden="true"></div>
 
-  <script type="module" src="./app.js?v=4.0.0"></script>
+  <script type="module" src="./app.js?v=6.0.0"></script>
 </body>
 </html>

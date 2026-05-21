@@ -7,34 +7,64 @@ service cloud.firestore {
     function isAdmin() {
       return signedIn() && request.auth.token.email == 'fc781117@gmail.com';
     }
-    function isOwner() {
-      return signedIn() && (resource.data.createdBy == request.auth.uid || resource.data.createdByEmail == request.auth.token.email);
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
     }
-    function isCreatingOwnDoc() {
-      return signedIn() && request.resource.data.createdBy == request.auth.uid;
+    function isApproved() {
+      return isAdmin() || (
+        signedIn() &&
+        exists(userPath()) &&
+        get(userPath()).data.status == 'approved'
+      );
+    }
+    function isCaseOwnerData(data) {
+      return signedIn() && (
+        data.createdBy == request.auth.uid ||
+        data.createdByEmail == request.auth.token.email
+      );
+    }
+    function isCaseOwnerByCaseId(caseId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/cases/$(caseId)) &&
+        (
+          get(/databases/$(database)/documents/cases/$(caseId)).data.createdBy == request.auth.uid ||
+          get(/databases/$(database)/documents/cases/$(caseId)).data.createdByEmail == request.auth.token.email
+        );
     }
 
     match /users/{userId} {
-      allow read: if signedIn();
-      allow create, update: if signedIn() && (request.auth.uid == userId || isAdmin());
-      allow delete: if isAdmin();
+      allow read: if signedIn() && (isAdmin() || request.auth.uid == userId);
+      allow create: if signedIn() && request.auth.uid == userId &&
+        (isAdmin() || request.resource.data.status == 'pending');
+      allow update: if isAdmin() || (
+        signedIn() && request.auth.uid == userId &&
+        request.resource.data.status == resource.data.status &&
+        request.resource.data.role == resource.data.role
+      );
+      allow delete: if isAdmin() && resource.data.email != 'fc781117@gmail.com';
     }
 
     match /cases/{caseId} {
-      allow read: if signedIn();
-      allow create: if isCreatingOwnDoc() || isAdmin();
-      allow update, delete: if isAdmin() || isOwner();
+      allow read: if isApproved();
+      allow create: if isApproved() && (isAdmin() || isCaseOwnerData(request.resource.data));
+      allow update, delete: if isApproved() && (isAdmin() || isCaseOwnerData(resource.data));
     }
 
     match /registrations/{registrationId} {
-      allow read: if signedIn();
-      allow create: if signedIn();
-      allow update, delete: if isAdmin() || isOwner();
+      allow read: if isApproved();
+      allow create: if isApproved();
+      allow update, delete: if isApproved() && (
+        isAdmin() ||
+        isCaseOwnerByCaseId(resource.data.caseId) ||
+        resource.data.createdBy == request.auth.uid ||
+        resource.data.createdByEmail == request.auth.token.email ||
+        resource.data.applicantEmail == request.auth.token.email
+      );
     }
 
     match /auditLogs/{logId} {
       allow read: if isAdmin();
-      allow create: if signedIn();
+      allow create: if isApproved();
       allow update, delete: if false;
     }
   }
