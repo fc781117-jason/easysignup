@@ -239,6 +239,6 @@
 - 若 PDF 套件載入失敗，會開啟列印／另存 PDF 的備援預覽頁。
 
 
-## V6 重要補充：Firestore Rules 必須同步更新
+## V7 重要補充：Firestore Rules 必須同步更新
 
-V6 新增「使用者審核」與「案件建立者才可管理」機制，請務必到 Firebase Console → Firestore Database → Rules，貼上本資料夾內 `firestore.rules` 的完整內容並 Publish。若沒有更新 Rules，前端雖會限制操作，但資料庫層仍可能沿用舊權限。
+V7 新增「使用者審核」與「案件建立者才可管理」機制，請務必到 Firebase Console → Firestore Database → Rules，貼上本資料夾內 `firestore.rules` 的完整內容並 Publish。若沒有更新 Rules，前端雖會限制操作，但資料庫層仍可能沿用舊權限。

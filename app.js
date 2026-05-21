@@ -104,9 +104,10 @@ const nowText = () => new Date().toLocaleString('zh-TW', { hour12: false });
 const safe = (value, fallback = '') => value === undefined || value === null ? fallback : String(value);
 const randomId = (len = 6) => Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, len).padEnd(len, 'X');
 const sanitizeFilename = (name) => safe(name).replace(/[\\/:*?"<>|]/g, '_');
+const normEmail = (email) => safe(email).trim().toLowerCase();
 
 function isSystemAdmin() {
-  return currentUser?.email === ADMIN_EMAIL || currentUser?.role === 'systemAdmin';
+  return normEmail(currentUser?.email) === normEmail(ADMIN_EMAIL) || currentUser?.role === 'systemAdmin';
 }
 function canManageCase(c) {
   if (!c || !currentUser) return false;
@@ -225,7 +226,7 @@ function makeUser(user) {
     name: user.displayName || user.email || '使用者',
     email: user.email || ADMIN_EMAIL,
     photoURL: user.photoURL || '',
-    role: user.email === ADMIN_EMAIL ? 'systemAdmin' : 'manager'
+    role: normEmail(user.email) === normEmail(ADMIN_EMAIL) ? 'systemAdmin' : 'manager'
   };
 }
 
@@ -320,7 +321,7 @@ async function afterLogin(user, demo = false) {
   renderAll();
   applyRoleNavigation();
   showPage('cases');
-  toast('登入成功，歡迎使用 V6 權限審核與首頁整合版。', 'ok');
+  toast('登入成功，歡迎使用 V7 權限強化與案件管理修正版。', 'ok');
 }
 
 function showApprovalPending() {
@@ -340,7 +341,7 @@ async function logout() {
 }
 
 async function ensureUserProfile(user) {
-  const admin = user.email === ADMIN_EMAIL;
+  const admin = normEmail(user.email) === normEmail(ADMIN_EMAIL);
   let profile = {
     uid: user.uid,
     name: user.name,
@@ -391,7 +392,12 @@ function showPage(page) {
   }
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === page));
   document.querySelectorAll('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.page === page));
-  if (page === 'reports') renderReports();
+  if (page === 'reports') {
+    requestAnimationFrame(() => renderReports());
+  }
+  if (page === 'settings') {
+    renderUserApprovalPanel();
+  }
   if (page === 'dashboard') renderDashboard();
 }
 
@@ -407,7 +413,7 @@ function renderAll() {
   renderCasesTable();
   renderCaseSelects();
   renderRegistrationForm();
-  renderReports();
+  if (document.getElementById('reports')?.classList.contains('active')) renderReports();
   renderEnvStatus();
   renderUserApprovalPanel();
   applyRoleNavigation();
@@ -797,7 +803,7 @@ function renderCasesTable() {
   }).join('') || '<tr><td colspan="7"><div class="notice">目前沒有符合條件的案件。</div></td></tr>'}</tbody></table>`;
   document.querySelectorAll('[data-fill]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.fill; registrationEditingId = ''; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
   document.querySelectorAll('[data-reedit]').forEach(btn => btn.addEventListener('click', () => { selectedCaseId = btn.dataset.reedit; const reg = ownRegistrationFor(selectedCaseId); registrationEditingId = reg?.id || ''; renderCaseSelects(); renderRegistrationForm(); showPage('registration'); }));
-  document.querySelectorAll('[data-report]').forEach(btn => btn.addEventListener('click', () => { reportCaseId = btn.dataset.report; renderCaseSelects(); renderReports(); showPage('reports'); }));
+  document.querySelectorAll('[data-report]').forEach(btn => btn.addEventListener('click', () => { reportCaseId = btn.dataset.report; renderCaseSelects(); showPage('reports'); }));
 }
 
 function renderCaseSelects() {
@@ -1157,24 +1163,20 @@ function renderRegistrationsTable(regs, c) {
 }
 
 function renderReportCharts(regs, c) {
-  reportCharts.forEach(ch => ch.destroy());
+  // V7 改用純 HTML/SVG 圖表，避免手機或隱藏分頁 canvas 初始化後呈現空白。
+  reportCharts.forEach(ch => ch.destroy?.());
   reportCharts = [];
-  const chartDefs = [
-    ['genderChart', '性別', countBy(regs, r => r.formData?.gender || '未填')],
-    ['unitChart', '單位', c.audience === 'external' ? { '外部單位不統計': regs.length } : countBy(regs, r => r.formData?.unit || '未填')],
-    ['positionChart', '職稱', c.audience === 'external' ? { '外部人員不填職稱': regs.length } : countBy(regs, r => `${r.formData?.dutyType === 'office' ? '內勤' : '外勤'}-${r.formData?.position || '未填'}`)],
-    ['ageChart', '年齡', countBy(regs, r => ageBucket(Number(r.formData?.age || 0), c))]
-  ];
-  chartDefs.forEach(([id, label, obj]) => {
-    const labels = Object.keys(obj);
-    const values = Object.values(obj);
-    const chart = new Chart($(id), {
-      type: id === 'unitChart' || id === 'positionChart' || id === 'ageChart' ? 'bar' : 'doughnut',
-      data: { labels, datasets: [{ label, data: values, borderWidth: 1, borderRadius: 8 }] },
-      options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: id === 'genderChart' ? {} : { y: { beginAtZero: true, ticks: { precision: 0 } } } }
-    });
-    reportCharts.push(chart);
-  });
+  const panel = $('reportVisualCharts');
+  if (!panel) return;
+  const stats = buildStatsObjects(regs, c);
+  panel.innerHTML = `
+    <section class="ui-chart-card"><h4>性別統計</h4><div class="pie-layout">${svgPie(stats.gender)}${legendHtml(stats.gender)}</div></section>
+    <section class="ui-chart-card"><h4>餐食需求</h4><div class="pie-layout">${svgPie(stats.meals, ['#b91c1c','#16a34a','#94a3b8'])}${legendHtml(stats.meals, ['#b91c1c','#16a34a','#94a3b8'])}</div></section>
+    <section class="ui-chart-card"><h4>停車需求</h4>${barChartHtml(stats.parking, 8)}</section>
+    <section class="ui-chart-card"><h4>年齡區間</h4>${barChartHtml(stats.age, 10)}</section>
+    <section class="ui-chart-card wide"><h4>單位統計</h4>${barChartHtml(stats.unit, 12)}</section>
+    <section class="ui-chart-card wide"><h4>職稱統計</h4>${barChartHtml(stats.position, 12)}</section>
+  `;
 }
 
 function countBy(list, getter) {
@@ -1550,18 +1552,23 @@ function renderUserApprovalPanel() {
     return;
   }
   const sorted = [...users].sort((a, b) => {
-    const rank = (u) => u.email === ADMIN_EMAIL ? 0 : (u.status === 'pending' ? 1 : u.status === 'approved' ? 2 : 3);
-    return rank(a) - rank(b) || safe(a.email).localeCompare(safe(b.email));
+    const statusA = normEmail(a.email) === normEmail(ADMIN_EMAIL) ? 'approved' : (a.status || a.approvalStatus || 'pending');
+    const statusB = normEmail(b.email) === normEmail(ADMIN_EMAIL) ? 'approved' : (b.status || b.approvalStatus || 'pending');
+    const rank = (status) => status === 'pending' ? 0 : status === 'approved' ? 1 : 2;
+    if (normEmail(a.email) === normEmail(ADMIN_EMAIL)) return -1;
+    if (normEmail(b.email) === normEmail(ADMIN_EMAIL)) return 1;
+    return rank(statusA) - rank(statusB) || safe(a.email).localeCompare(safe(b.email));
   });
+  const pendingCount = sorted.filter(u => normEmail(u.email) !== normEmail(ADMIN_EMAIL) && (u.status || u.approvalStatus || 'pending') === 'pending').length;
   if (!sorted.length) {
-    panel.innerHTML = '<div class="notice">尚無使用者資料。新帳號登入後會出現在這裡等待審核。</div>';
+    panel.innerHTML = `<div class="approval-empty-box"><strong>目前沒有使用者資料</strong><span>新帳號第一次 Google 登入後，會自動出現在這裡等待核准。</span></div>`;
     return;
   }
-  panel.innerHTML = sorted.map(u => {
+  panel.innerHTML = `<div class="approval-summary"><strong>待審核：${pendingCount} 人</strong><span>核准後才可使用系統；停用帳號將無法進入案件資料。</span></div>` + sorted.map(u => {
     const uid = u.uid || u.id;
-    const status = u.email === ADMIN_EMAIL ? 'approved' : (u.status || u.approvalStatus || 'pending');
+    const status = normEmail(u.email) === normEmail(ADMIN_EMAIL) ? 'approved' : (u.status || u.approvalStatus || 'pending');
     const badge = status === 'approved' ? '<span class="badge open">已核准</span>' : status === 'rejected' ? '<span class="badge closed">已停用</span>' : '<span class="badge draft">待審核</span>';
-    const actions = u.email === ADMIN_EMAIL ? '<span class="muted small">固定最高管理員</span>' : `
+    const actions = normEmail(u.email) === normEmail(ADMIN_EMAIL) ? '<span class="muted small">固定最高管理員</span>' : `
       <button class="btn btn-secondary mini" data-approve-user="${uid}" ${status === 'approved' ? 'disabled' : ''}>核准</button>
       <button class="btn btn-outline mini" data-reject-user="${uid}" ${status === 'rejected' ? 'disabled' : ''}>停用</button>`;
     return `<div class="approval-row"><div><strong>${safe(u.name || u.email)}</strong><br><small class="muted">${safe(u.email)}｜${safe(uid)}</small></div><div>${badge}</div><div class="approval-actions">${actions}</div></div>`;
