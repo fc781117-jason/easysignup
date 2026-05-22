@@ -24,9 +24,19 @@ import {
   serverTimestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js';
 
+
+async function ensureAppConfigLoaded() {
+  if (window.APP_CONFIG) return;
+  try {
+    await import(`./firebase-config.js?force=${Date.now()}`);
+  } catch (error) {
+    window.__APP_CONFIG_LOAD_ERROR = error?.message || String(error);
+  }
+}
+await ensureAppConfigLoaded();
 const CONFIG = window.APP_CONFIG || {};
 const ADMIN_EMAIL = CONFIG.systemAdminEmail || 'fc781117@gmail.com';
-const STORAGE_KEY = 'fire-registration-app-v3'; // 僅供舊版資料清理參考；V11 正式模式停用 Demo 登入
+const STORAGE_KEY = 'fire-registration-app-v3'; // 僅供舊版資料清理參考；V12 正式模式停用 Demo 登入
 
 const OUTSIDE_PLACEHOLDER = '外部單位不列入統計';
 const FIELD = {
@@ -202,7 +212,10 @@ function formOptionValues(name) {
 }
 
 function firebaseConfigStatus() {
-  if (!window.APP_CONFIG) return '尚未讀取到 window.APP_CONFIG；可能是 firebase-config.js 沒有載入、被快取，或語法錯誤。';
+  if (!window.APP_CONFIG) {
+    const loadError = window.__APP_CONFIG_LOAD_ERROR ? `；載入錯誤：${window.__APP_CONFIG_LOAD_ERROR}` : '';
+    return `尚未讀取到 window.APP_CONFIG；已強制重新讀取 firebase-config.js 但仍失敗。請直接開啟 /firebase-config.js 檢查是否有 window.APP_CONFIG${loadError}`;
+  }
   const cfg = CONFIG.firebaseConfig || {};
   if (!cfg.apiKey) return '缺少 firebaseConfig.apiKey。';
   if (!cfg.authDomain) return '缺少 firebaseConfig.authDomain。';
@@ -257,7 +270,7 @@ async function init() {
   renderEnvStatus();
   renderUserApprovalPanel();
   applyRoleNavigation();
-  // V11：正式版全面停用 Demo 登入，避免任何人繞過審核或取得最高管理員權限。
+  // V12：正式版全面停用 Demo 登入，避免任何人繞過審核或取得最高管理員權限。
   if ($('demoLoginBtn')) $('demoLoginBtn').classList.add('hidden');
   if ($('configWarning')) {
     const reason = firebaseConfigStatus();
@@ -289,7 +302,7 @@ function demoUser() {
 function wireEvents() {
   $('googleLoginBtn').addEventListener('click', loginWithGoogle);
   $('demoLoginBtn')?.addEventListener('click', async () => {
-    toast('V11 正式安全版已停用 Demo 登入，請使用 Firebase Google 登入。', 'warn');
+    toast('V12 正式安全版已停用 Demo 登入，請使用 Firebase Google 登入。', 'warn');
   });
   $('logoutBtn').addEventListener('click', logout);
   $('pendingLogoutBtn')?.addEventListener('click', logout);
@@ -365,7 +378,7 @@ async function afterLogin(user, demo = false) {
   renderAll();
   applyRoleNavigation();
   showPage('cases');
-  toast('登入成功，歡迎使用 V11 Firebase 正式安全版。', 'ok');
+  toast('登入成功，歡迎使用 V12 Firebase 正式安全版。', 'ok');
 }
 
 function showApprovalPending() {
@@ -1679,7 +1692,7 @@ function renderEnvStatus() {
   const rows = [
     ['Firebase 狀態', usingFirebase ? '已設定' : '未設定／不可登入'],
     ['Google Drive OAuth', validGoogleClient() ? '已填入 Client ID' : '尚未填入 Client ID'],
-    ['目前模式', usingFirebase ? 'Firebase/Firestore 正式模式' : '設定未完成，V11 已停用 Demo'],
+    ['目前模式', usingFirebase ? 'Firebase/Firestore 正式模式' : '設定未完成，V12 已停用 Demo'],
     ['系統管理員', ADMIN_EMAIL],
     ['Firestore 專案', CONFIG.firebaseConfig?.projectId || '未填寫']
   ];
