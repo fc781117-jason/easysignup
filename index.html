@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>消防局多功能報名系統 V9</title>
-  <link rel="stylesheet" href="./styles.css?v=9.0.0" />
+  <title>消防局多功能報名系統 V10</title>
+  <link rel="stylesheet" href="./styles.css?v=10.0.0" />
   <script src="./firebase-config.js?v=9.0.0"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -19,7 +19,7 @@
     <div class="login-card">
       <div class="brand-mark">🚒</div>
       <h1>消防局多功能報名系統</h1>
-      <p class="subtitle">Fire Department Registration Platform｜V9.0 權限安全強化版</p>
+      <p class="subtitle">Fire Department Registration Platform｜V10.0 Firebase 正式安全版</p>
       <div class="feature-list">
         <div>✅ 承辦人自建案件與表單</div>
         <div>✅ 內部 / 外部報名模板分流</div>
@@ -28,8 +28,9 @@
         <div>✅ 附件上傳至承辦人自己的 Google Drive</div>
       </div>
       <button id="googleLoginBtn" class="btn btn-primary wide">使用 Google 帳號登入</button>
-      <button id="demoLoginBtn" class="btn btn-outline wide">Demo 模式登入（未設定 Firebase 時使用）</button>
-      <p class="tiny muted mt-3">系統管理員固定：<strong id="adminEmailLabel"></strong>。正式上線前請完成 Firebase 與 Google OAuth 設定。</p>
+      <button id="demoLoginBtn" class="btn btn-outline wide hidden" type="button" aria-hidden="true">Demo 模式已停用</button>
+      <div id="configWarning" class="notice warn text-left mt-3 hidden">⚠️ Firebase 尚未正確連線：請檢查 <strong>firebase-config.js</strong> 是否已填入 Firebase Web App 設定。未連線時不會跨帳號同步，也不允許進入系統。</div>
+      <p class="tiny muted mt-3">系統管理員固定：<strong id="adminEmailLabel"></strong>。V10 已停用 Demo 登入，正式操作一律走 Firebase Auth / Firestore。</p>
     </div>
   </section>
 
@@ -52,8 +53,8 @@
       <div class="side-brand">
         <span class="brand-icon">🚒</span>
         <div>
-          <strong>報名系統 V9</strong>
-          <small>Firebase / Drive Ready｜V9.0</small>
+          <strong>報名系統 V10</strong>
+          <small>Firebase / Drive Ready｜V10.0</small>
         </div>
       </div>
       <div class="user-card">
@@ -329,6 +330,6 @@
 
   <div id="pdfCanvas" class="pdf-canvas hidden" aria-hidden="true"></div>
 
-  <script type="module" src="./app.js?v=9.0.0"></script>
+  <script type="module" src="./app.js?v=10.0.0"></script>
 </body>
 </html>

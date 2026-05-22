@@ -51,6 +51,8 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if signedIn() && (isAppAdmin() || request.auth.uid == userId);
       allow create: if signedIn() && request.auth.uid == userId &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.email == request.auth.token.email &&
         (
           (request.auth.token.email == fixedAdminEmail() && request.resource.data.role == 'systemAdmin' && request.resource.data.status == 'approved') ||
           (request.auth.token.email != fixedAdminEmail() && request.resource.data.status == 'pending' && request.resource.data.role == 'manager')
@@ -76,7 +78,15 @@ service cloud.firestore {
           request.resource.data.createdByEmail == request.auth.token.email
         )
       );
-      allow update, delete: if isApprovedUser() && (isAppAdmin() || isCaseOwnerData(resource.data));
+      allow update: if isApprovedUser() && (
+        isAppAdmin() ||
+        (
+          isCaseOwnerData(resource.data) &&
+          request.resource.data.createdBy == resource.data.createdBy &&
+          request.resource.data.createdByEmail == resource.data.createdByEmail
+        )
+      );
+      allow delete: if isApprovedUser() && (isAppAdmin() || isCaseOwnerData(resource.data));
     }
 
     match /registrations/{registrationId} {

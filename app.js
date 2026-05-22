@@ -4,7 +4,9 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
   onAuthStateChanged,
-  signOut
+  signOut,
+  setPersistence,
+  browserLocalPersistence
 } from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js';
 import {
   getFirestore,
@@ -24,7 +26,7 @@ import {
 
 const CONFIG = window.APP_CONFIG || {};
 const ADMIN_EMAIL = CONFIG.systemAdminEmail || 'fc781117@gmail.com';
-const STORAGE_KEY = 'fire-registration-app-v3'; // 保留既有 Demo 資料
+const STORAGE_KEY = 'fire-registration-app-v3'; // 僅供舊版資料清理參考；V10 正式模式停用 Demo 登入
 
 const OUTSIDE_PLACEHOLDER = '外部單位不列入統計';
 const FIELD = {
@@ -220,6 +222,7 @@ async function init() {
     try {
       firebaseApp = initializeApp(CONFIG.firebaseConfig);
       auth = getAuth(firebaseApp);
+      await setPersistence(auth, browserLocalPersistence);
       db = getFirestore(firebaseApp);
       usingFirebase = true;
       usingDemoMode = false;
@@ -233,7 +236,8 @@ async function init() {
       toast('Firebase 初始化失敗，已切換 Demo 模式：' + err.message, 'warn');
     }
   } else {
-    usingDemoMode = true;
+    usingFirebase = false;
+    usingDemoMode = false;
   }
 
   editorFieldSettings = defaultFieldSettings($('caseAudience').value || 'internal');
@@ -244,8 +248,9 @@ async function init() {
   renderEnvStatus();
   renderUserApprovalPanel();
   applyRoleNavigation();
-  // 正式 Firebase 模式禁止 Demo 登入，避免繞過審核與權限控管。
-  if ($('demoLoginBtn')) $('demoLoginBtn').classList.toggle('hidden', usingFirebase || !CONFIG.allowDemoMode);
+  // V10：正式版全面停用 Demo 登入，避免任何人繞過審核或取得最高管理員權限。
+  if ($('demoLoginBtn')) $('demoLoginBtn').classList.add('hidden');
+  if ($('configWarning')) $('configWarning').classList.toggle('hidden', usingFirebase);
 }
 
 function makeUser(user) {
@@ -270,9 +275,8 @@ function demoUser() {
 
 function wireEvents() {
   $('googleLoginBtn').addEventListener('click', loginWithGoogle);
-  $('demoLoginBtn').addEventListener('click', async () => {
-    if (usingFirebase || !CONFIG.allowDemoMode) return toast('正式 Firebase 模式已停用 Demo 登入。', 'warn');
-    await afterLogin(demoUser(), true);
+  $('demoLoginBtn')?.addEventListener('click', async () => {
+    toast('V10 正式安全版已停用 Demo 登入，請使用 Firebase Google 登入。', 'warn');
   });
   $('logoutBtn').addEventListener('click', logout);
   $('pendingLogoutBtn')?.addEventListener('click', logout);
@@ -313,12 +317,8 @@ function wireEvents() {
 
 async function loginWithGoogle() {
   if (!usingFirebase || !auth) {
-    if (CONFIG.allowDemoMode) {
-      toast('尚未完成 Firebase 設定，已使用 Demo 模式登入。', 'warn');
-      await afterLogin(demoUser(), true);
-      return;
-    }
-    toast('請先完成 Firebase 設定。', 'danger');
+    if ($('configWarning')) $('configWarning').classList.remove('hidden');
+    toast('Firebase 尚未正確連線，已阻止登入。請先填妥 firebase-config.js。', 'danger');
     return;
   }
   try {
@@ -352,7 +352,7 @@ async function afterLogin(user, demo = false) {
   renderAll();
   applyRoleNavigation();
   showPage('cases');
-  toast('登入成功，歡迎使用 V9 權限安全強化版。', 'ok');
+  toast('登入成功，歡迎使用 V10 Firebase 正式安全版。', 'ok');
 }
 
 function showApprovalPending() {
@@ -841,7 +841,7 @@ function renderCasesTable() {
   });
   $('caseTable').innerHTML = `<table class="data-table"><thead><tr><th>案件</th><th>模板</th><th>狀態</th><th>報名進度</th><th>停車位</th><th>截止日</th><th>操作</th></tr></thead><tbody>${filtered.map(c => {
     const count = countRegs(c.id);
-    const manageBtn = canManageCase(c) ? `<button class="btn btn-secondary" data-report="${c.id}">案件管理</button>` : '';
+    const manageBtn = canManageCase(c) ? `<button class="btn btn-secondary" data-report="${c.id}">案件管理</button>` : `<button class="btn btn-secondary" disabled title="僅承辦人、系統管理員或最高系統管理員可管理此案件">案件管理</button>`;
     const fillBtn = c.status === 'open' ? `<button class="btn btn-outline" data-fill="${c.id}">報名填寫</button>` : `<button class="btn btn-outline" disabled>報名填寫</button>`;
     return `<tr><td><strong>${safe(c.title)}</strong><br><small class="muted">${safe(c.agencyName)}｜${safe(c.type)}｜承辦：${safe(c.createdByName || c.createdByEmail || '未記錄')}</small></td><td><span class="badge ${c.audience === 'external' ? 'orange' : 'blue'}">${c.audience === 'external' ? '外部' : '內部'}</span></td><td><span class="badge ${c.status}">${statusText(c.status)}</span></td><td>${count}/${c.quota || '不限'}</td><td>${c.parkingSlots || 0} 位</td><td>${safe(c.deadline)}</td><td><div class="case-action-group">${fillBtn}${manageBtn}</div></td></tr>`;
   }).join('') || '<tr><td colspan="7"><div class="notice">目前沒有符合條件的案件。</div></td></tr>'}</tbody></table>`;
@@ -1664,13 +1664,14 @@ function renderUserApprovalPanel() {
 
 function renderEnvStatus() {
   const rows = [
-    ['Firebase 狀態', usingFirebase ? '已設定' : '未設定／Demo 模式'],
+    ['Firebase 狀態', usingFirebase ? '已設定' : '未設定／不可登入'],
     ['Google Drive OAuth', validGoogleClient() ? '已填入 Client ID' : '尚未填入 Client ID'],
-    ['目前模式', usingDemoMode ? 'Demo/localStorage' : 'Firebase/Firestore'],
+    ['目前模式', usingFirebase ? 'Firebase/Firestore 正式模式' : '設定未完成，V10 已停用 Demo'],
     ['系統管理員', ADMIN_EMAIL],
     ['Firestore 專案', CONFIG.firebaseConfig?.projectId || '未填寫']
   ];
-  $('envStatus').innerHTML = rows.map(([k,v]) => `<div class="setting-row"><strong>${k}</strong><span>${v}</span></div>`).join('');
+  const warning = usingFirebase ? '' : '<div class="notice warn mt-3">Firebase 未連線代表目前不會跨帳號同步，也不會開放登入。請確認 GitHub 上的 firebase-config.js 沒有被新版壓縮包覆蓋成 PASTE_FIREBASE_API_KEY_HERE。</div>';
+  $('envStatus').innerHTML = rows.map(([k,v]) => `<div class="setting-row"><strong>${k}</strong><span>${v}</span></div>`).join('') + warning;
 }
 
 function renderPositionRules() {

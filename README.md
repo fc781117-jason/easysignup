@@ -1,4 +1,4 @@
-# 消防局多功能報名系統 V9
+# 消防局多功能報名系統 V10
 
 這是一個可直接部署到 Vercel 的靜態網頁版 App，使用 Firebase Authentication / Firestore 作為登入與資料庫，並支援 PDF、Excel、簽到表、餐食簽收表輸出。
 
@@ -58,10 +58,15 @@
 - PDF 產出支援桌機下載與手機預覽。
 - 若 PDF 套件載入失敗，會開啟列印／另存 PDF 的備援預覽頁。
 
-## V9 權限安全重點
+## V10 權限安全重點
 
 - 正式 Firebase 模式會自動停用 Demo 登入，避免未審核帳號繞過權限。
 - 新 Google 帳號第一次登入後狀態為「待審核」，未核准前不能進入系統。
 - 承辦人只能管理自己建立的案件。
 - 系統管理員可管理全部案件與審核使用者，但只有最高系統管理員可調整「承辦人 / 系統管理員」角色。
 - 最高系統管理員固定為 `fc781117@gmail.com`，不可由一般介面或資料庫覆寫。
+
+
+## V10 重要安全提醒
+
+V10 已停用 Demo 登入。若登入頁仍看到「Firebase 尚未正確連線」，代表 `firebase-config.js` 尚未填入真正的 Firebase Web App config，或更新版本時被範本檔覆蓋。此狀態不會跨帳號同步，也不允許登入系統。請到 Firebase Console → Project settings → General → Your apps → Web app config 複製設定並貼回 `firebase-config.js`。
