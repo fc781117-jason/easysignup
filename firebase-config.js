@@ -19,7 +19,7 @@ window.APP_CONFIG = {
   storageBucket: "easysignup-59036.firebasestorage.app",
   messagingSenderId: "809543820672",
   appId: "1:809543820672:web:bcb7eb1fba809f73ca8d65"
-};
+ },
 
   // Google Drive API 附件上傳使用。必須是「Web application」OAuth Client ID。
   googleOAuthClientId: '455193883848-l0b9ahhtn6ib6vqie83pga48aqe51ob4.apps.googleusercontent.com'
