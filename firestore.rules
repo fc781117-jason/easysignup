@@ -4,18 +4,29 @@ service cloud.firestore {
     function signedIn() {
       return request.auth != null;
     }
-    function isAdmin() {
-      return signedIn() && request.auth.token.email == 'fc781117@gmail.com';
+    function fixedAdminEmail() {
+      return 'fc781117@gmail.com';
+    }
+    function isSystemAdmin() {
+      return signedIn() && request.auth.token.email == fixedAdminEmail();
     }
     function userPath() {
       return /databases/$(database)/documents/users/$(request.auth.uid);
     }
-    function isApproved() {
-      return isAdmin() || (
-        signedIn() &&
-        exists(userPath()) &&
-        get(userPath()).data.status == 'approved'
-      );
+    function hasUserProfile() {
+      return signedIn() && exists(userPath());
+    }
+    function currentRole() {
+      return hasUserProfile() ? get(userPath()).data.role : 'pending';
+    }
+    function currentStatus() {
+      return hasUserProfile() ? get(userPath()).data.status : 'pending';
+    }
+    function isApprovedUser() {
+      return isSystemAdmin() || (signedIn() && hasUserProfile() && currentStatus() == 'approved');
+    }
+    function isAppAdmin() {
+      return isSystemAdmin() || (isApprovedUser() && currentRole() == 'admin');
     }
     function isCaseOwnerData(data) {
       return signedIn() && (
@@ -23,48 +34,77 @@ service cloud.firestore {
         data.createdByEmail == request.auth.token.email
       );
     }
+    function casePath(caseId) {
+      return /databases/$(database)/documents/cases/$(caseId);
+    }
     function isCaseOwnerByCaseId(caseId) {
-      return signedIn() &&
-        exists(/databases/$(database)/documents/cases/$(caseId)) &&
-        (
-          get(/databases/$(database)/documents/cases/$(caseId)).data.createdBy == request.auth.uid ||
-          get(/databases/$(database)/documents/cases/$(caseId)).data.createdByEmail == request.auth.token.email
-        );
+      return signedIn() && exists(casePath(caseId)) && (
+        get(casePath(caseId)).data.createdBy == request.auth.uid ||
+        get(casePath(caseId)).data.createdByEmail == request.auth.token.email
+      );
+    }
+    function immutableUserIdentity() {
+      return request.resource.data.email == resource.data.email &&
+        request.resource.data.uid == resource.data.uid;
     }
 
     match /users/{userId} {
-      allow read: if signedIn() && (isAdmin() || request.auth.uid == userId);
+      allow read: if signedIn() && (isAppAdmin() || request.auth.uid == userId);
       allow create: if signedIn() && request.auth.uid == userId &&
-        (isAdmin() || request.resource.data.status == 'pending');
-      allow update: if isAdmin() || (
-        signedIn() && request.auth.uid == userId &&
-        request.resource.data.status == resource.data.status &&
-        request.resource.data.role == resource.data.role
+        (
+          (request.auth.token.email == fixedAdminEmail() && request.resource.data.role == 'systemAdmin' && request.resource.data.status == 'approved') ||
+          (request.auth.token.email != fixedAdminEmail() && request.resource.data.status == 'pending' && request.resource.data.role == 'manager')
+        );
+      allow update: if signedIn() && (
+        // 最高系統管理員可管理所有使用者，但自己的固定身分必須維持 approved/systemAdmin。
+        (isSystemAdmin() && (
+          resource.data.email != fixedAdminEmail() ||
+          (request.resource.data.email == fixedAdminEmail() && request.resource.data.role == 'systemAdmin' && request.resource.data.status == 'approved')
+        )) ||
+        // 系統管理員可核准／停用一般承辦人，但不可變更角色、不可動到最高系統管理員。
+        (isAppAdmin() && resource.data.email != fixedAdminEmail() && immutableUserIdentity() && request.resource.data.role == resource.data.role)
       );
-      allow delete: if isAdmin() && resource.data.email != 'fc781117@gmail.com';
+      allow delete: if isSystemAdmin() && resource.data.email != fixedAdminEmail();
     }
 
     match /cases/{caseId} {
-      allow read: if isApproved();
-      allow create: if isApproved() && (isAdmin() || isCaseOwnerData(request.resource.data));
-      allow update, delete: if isApproved() && (isAdmin() || isCaseOwnerData(resource.data));
+      allow read: if isApprovedUser();
+      allow create: if isApprovedUser() && (
+        isAppAdmin() ||
+        (
+          request.resource.data.createdBy == request.auth.uid &&
+          request.resource.data.createdByEmail == request.auth.token.email
+        )
+      );
+      allow update, delete: if isApprovedUser() && (isAppAdmin() || isCaseOwnerData(resource.data));
     }
 
     match /registrations/{registrationId} {
-      allow read: if isApproved();
-      allow create: if isApproved();
-      allow update, delete: if isApproved() && (
-        isAdmin() ||
+      allow read: if isApprovedUser() && (
+        isAppAdmin() ||
         isCaseOwnerByCaseId(resource.data.caseId) ||
         resource.data.createdBy == request.auth.uid ||
         resource.data.createdByEmail == request.auth.token.email ||
         resource.data.applicantEmail == request.auth.token.email
       );
+      allow create: if isApprovedUser() &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.createdByEmail == request.auth.token.email &&
+        exists(casePath(request.resource.data.caseId)) &&
+        get(casePath(request.resource.data.caseId)).data.status == 'open';
+      allow update: if isApprovedUser() && (
+        isAppAdmin() ||
+        isCaseOwnerByCaseId(resource.data.caseId) ||
+        resource.data.createdBy == request.auth.uid ||
+        resource.data.createdByEmail == request.auth.token.email ||
+        resource.data.applicantEmail == request.auth.token.email
+      );
+      allow delete: if isApprovedUser() && (isAppAdmin() || isCaseOwnerByCaseId(resource.data.caseId));
     }
 
     match /auditLogs/{logId} {
-      allow read: if isAdmin();
-      allow create: if isApproved();
+      allow read: if isAppAdmin();
+      allow create: if isApprovedUser();
       allow update, delete: if false;
     }
   }

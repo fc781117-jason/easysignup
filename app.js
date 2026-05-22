@@ -106,12 +106,38 @@ const randomId = (len = 6) => Math.random().toString(36).toUpperCase().replace(/
 const sanitizeFilename = (name) => safe(name).replace(/[\\/:*?"<>|]/g, '_');
 const normEmail = (email) => safe(email).trim().toLowerCase();
 
-function isSystemAdmin() {
-  return normEmail(currentUser?.email) === normEmail(ADMIN_EMAIL) || currentUser?.role === 'systemAdmin';
+function userStatus(user = currentUser) {
+  if (!user) return 'pending';
+  if (normEmail(user.email) === normEmail(ADMIN_EMAIL)) return 'approved';
+  return user.status || user.approvalStatus || 'pending';
+}
+function isSystemAdmin(user = currentUser) {
+  // 最高系統管理員採固定信箱寫死，不接受資料庫覆寫。
+  return normEmail(user?.email) === normEmail(ADMIN_EMAIL);
+}
+function isApprovedUser(user = currentUser) {
+  return isSystemAdmin(user) || userStatus(user) === 'approved';
+}
+function isAppAdmin(user = currentUser) {
+  return isSystemAdmin(user) || (isApprovedUser(user) && user?.role === 'admin');
+}
+function canManageUsers() {
+  return isAppAdmin();
+}
+function canChangeUserRole() {
+  return isSystemAdmin();
 }
 function canManageCase(c) {
-  if (!c || !currentUser) return false;
-  return isSystemAdmin() || c.createdBy === currentUser.uid || c.createdByEmail === currentUser.email;
+  if (!c || !currentUser || !isApprovedUser()) return false;
+  return isAppAdmin() || c.createdBy === currentUser.uid || normEmail(c.createdByEmail) === normEmail(currentUser.email);
+}
+function roleLabel(role, email = '') {
+  if (normEmail(email) === normEmail(ADMIN_EMAIL) || role === 'systemAdmin') return '最高系統管理員（固定）';
+  if (role === 'admin') return '系統管理員';
+  return '承辦人';
+}
+function statusLabel(status) {
+  return status === 'approved' ? '已核准' : status === 'rejected' || status === 'suspended' ? '已停用' : '待審核';
 }
 function visibleFixedFieldDefs(audience) {
   return FIXED_FIELD_DEFS.filter(f => audience === 'internal' || !f.internalOnly);
@@ -218,6 +244,8 @@ async function init() {
   renderEnvStatus();
   renderUserApprovalPanel();
   applyRoleNavigation();
+  // 正式 Firebase 模式禁止 Demo 登入，避免繞過審核與權限控管。
+  if ($('demoLoginBtn')) $('demoLoginBtn').classList.toggle('hidden', usingFirebase || !CONFIG.allowDemoMode);
 }
 
 function makeUser(user) {
@@ -242,7 +270,10 @@ function demoUser() {
 
 function wireEvents() {
   $('googleLoginBtn').addEventListener('click', loginWithGoogle);
-  $('demoLoginBtn').addEventListener('click', async () => afterLogin(demoUser(), true));
+  $('demoLoginBtn').addEventListener('click', async () => {
+    if (usingFirebase || !CONFIG.allowDemoMode) return toast('正式 Firebase 模式已停用 Demo 登入。', 'warn');
+    await afterLogin(demoUser(), true);
+  });
   $('logoutBtn').addEventListener('click', logout);
   $('pendingLogoutBtn')?.addEventListener('click', logout);
   document.querySelectorAll('.nav-item').forEach(btn => btn.addEventListener('click', () => showPage(btn.dataset.page)));
@@ -305,9 +336,9 @@ async function afterLogin(user, demo = false) {
   if (demo) usingDemoMode = true;
   await ensureUserProfile(user);
 
-  if (!isSystemAdmin() && currentUser.approvalStatus !== 'approved') {
+  if (!isApprovedUser()) {
     showApprovalPending();
-    toast('您的帳號尚未核准，請等待最高系統管理員審核。', 'warn');
+    toast('您的帳號尚未核准，請等待最高系統管理員或系統管理員審核。', 'warn');
     return;
   }
 
@@ -315,20 +346,20 @@ async function afterLogin(user, demo = false) {
   $('approvalPage')?.classList.add('hidden');
   $('appShell').classList.remove('hidden');
   $('userName').textContent = currentUser.name;
-  $('userRole').textContent = isSystemAdmin() ? '最高系統管理員（固定）' : '已核准使用者';
+  $('userRole').textContent = roleLabel(currentUser.role, currentUser.email);
   $('userAvatar').textContent = (currentUser.name || currentUser.email || '?').slice(0, 1).toUpperCase();
   await loadAllData();
   renderAll();
   applyRoleNavigation();
   showPage('cases');
-  toast('登入成功，歡迎使用 V8 首頁操作簡化版。', 'ok');
+  toast('登入成功，歡迎使用 V9 權限安全強化版。', 'ok');
 }
 
 function showApprovalPending() {
   $('loginPage').classList.add('hidden');
   $('appShell').classList.add('hidden');
   $('approvalPage')?.classList.remove('hidden');
-  if ($('approvalStatusText')) $('approvalStatusText').textContent = currentUser?.approvalStatus === 'rejected' ? '未核准／停用' : '待審核';
+  if ($('approvalStatusText')) $('approvalStatusText').textContent = userStatus(currentUser) === 'rejected' || userStatus(currentUser) === 'suspended' ? '未核准／停用' : '待審核';
 }
 
 async function logout() {
@@ -375,14 +406,15 @@ async function ensureUserProfile(user) {
 
   currentUser = {
     ...currentUser,
-    role: profile.role,
-    approvalStatus: profile.status || profile.approvalStatus || (admin ? 'approved' : 'pending')
+    role: admin ? 'systemAdmin' : (profile.role || 'manager'),
+    status: admin ? 'approved' : (profile.status || profile.approvalStatus || 'pending'),
+    approvalStatus: admin ? 'approved' : (profile.status || profile.approvalStatus || 'pending')
   };
 }
 
 function showPage(page) {
   if (page === 'dashboard') page = 'cases';
-  if (!isSystemAdmin() && page === 'settings') page = 'cases';
+  if (!canManageUsers() && page === 'settings') page = 'cases';
   if (page === 'reports') {
     const c = getCase(reportCaseId);
     if (c && !canManageCase(c)) {
@@ -404,7 +436,7 @@ function showPage(page) {
 function applyRoleNavigation() {
   document.querySelectorAll('.nav-item').forEach(btn => {
     const adminOnly = btn.dataset.role === 'admin';
-    btn.classList.toggle('hidden', adminOnly && !isSystemAdmin());
+    btn.classList.toggle('hidden', adminOnly && !canManageUsers());
   });
 }
 
@@ -424,12 +456,26 @@ async function loadAllData() {
   if (usingFirebase && db) {
     const caseSnap = await getDocs(query(collection(db, 'cases'), orderBy('createdAt', 'desc'))).catch(async () => getDocs(collection(db, 'cases')));
     cases = caseSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    const regSnap = await getDocs(query(collection(db, 'registrations'), orderBy('submittedAt', 'desc'))).catch(async () => getDocs(collection(db, 'registrations')));
-    registrations = regSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (isSystemAdmin()) {
+
+    const regMap = new Map();
+    const addRegDocs = (snap) => snap?.docs?.forEach(d => regMap.set(d.id, { id: d.id, ...d.data() }));
+
+    if (isAppAdmin()) {
+      const regSnap = await getDocs(query(collection(db, 'registrations'), orderBy('submittedAt', 'desc'))).catch(async () => getDocs(collection(db, 'registrations')));
+      addRegDocs(regSnap);
       const userSnap = await getDocs(collection(db, 'users')).catch(() => ({ docs: [] }));
       users = userSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } else if (isApprovedUser()) {
+      // 一般承辦人只載入自己的報名，以及自己承辦案件底下的報名。
+      const ownRegSnap = await getDocs(query(collection(db, 'registrations'), where('createdBy', '==', currentUser.uid))).catch(() => ({ docs: [] }));
+      addRegDocs(ownRegSnap);
+      const ownedCases = cases.filter(c => c.createdBy === currentUser.uid || normEmail(c.createdByEmail) === normEmail(currentUser.email));
+      for (const c of ownedCases) {
+        const caseRegSnap = await getDocs(query(collection(db, 'registrations'), where('caseId', '==', c.id))).catch(() => ({ docs: [] }));
+        addRegDocs(caseRegSnap);
+      }
     }
+    registrations = Array.from(regMap.values()).sort((a, b) => Number(b.submittedAtMillis || 0) - Number(a.submittedAtMillis || 0));
   } else {
     const store = loadStore();
     cases = store.cases || [];
@@ -1525,53 +1571,95 @@ async function savePdfFromElement(el, filename, orientation = 'portrait') {
 }
 
 async function updateUserApproval(uid, status) {
-  if (!isSystemAdmin()) return toast('只有最高系統管理員可以審核使用者。', 'warn');
+  if (!canManageUsers()) return toast('只有最高系統管理員或系統管理員可以審核使用者。', 'warn');
   const target = users.find(u => u.uid === uid || u.id === uid);
-  if (target?.email === ADMIN_EMAIL) return toast('最高系統管理員不可停用。', 'warn');
+  if (normEmail(target?.email) === normEmail(ADMIN_EMAIL)) return toast('最高系統管理員不可停用或變更。', 'warn');
+  const nextStatus = status === 'suspended' ? 'rejected' : status;
+  const patch = { status: nextStatus, updatedBy: currentUser.email, updatedAtMillis: Date.now() };
+  if (nextStatus === 'approved') { patch.approvedBy = currentUser.email; patch.approvedAtMillis = Date.now(); }
   if (usingFirebase && db) {
-    await updateDoc(doc(db, 'users', uid), { status, updatedAt: serverTimestamp(), approvedBy: currentUser.email, approvedAt: serverTimestamp() });
+    await updateDoc(doc(db, 'users', uid), { ...patch, updatedAt: serverTimestamp(), approvedAt: nextStatus === 'approved' ? serverTimestamp() : null });
   } else {
     const store = loadStore();
     store.users = store.users || {};
-    store.users[uid] = { ...(store.users[uid] || target || {}), status, approvedBy: currentUser.email, approvedAtMillis: Date.now() };
+    store.users[uid] = { ...(store.users[uid] || target || {}), ...patch };
     saveStore(store);
   }
   await loadAllData();
   renderUserApprovalPanel();
-  toast(status === 'approved' ? '已核准使用者。' : '已停用使用者。', 'ok');
+  toast(nextStatus === 'approved' ? '已核准使用者。' : '已停用使用者。', 'ok');
+}
+
+async function updateUserRole(uid, role) {
+  if (!canChangeUserRole()) return toast('只有最高系統管理員可以調整管理員權限。', 'warn');
+  const target = users.find(u => u.uid === uid || u.id === uid);
+  if (!target) return toast('找不到使用者資料。', 'danger');
+  if (normEmail(target.email) === normEmail(ADMIN_EMAIL)) return toast('最高系統管理員角色固定，不能變更。', 'warn');
+  const nextRole = role === 'admin' ? 'admin' : 'manager';
+  if (usingFirebase && db) {
+    await updateDoc(doc(db, 'users', uid), { role: nextRole, updatedBy: currentUser.email, updatedAt: serverTimestamp(), updatedAtMillis: Date.now() });
+  } else {
+    const store = loadStore();
+    store.users = store.users || {};
+    store.users[uid] = { ...(store.users[uid] || target || {}), role: nextRole, updatedBy: currentUser.email, updatedAtMillis: Date.now() };
+    saveStore(store);
+  }
+  await loadAllData();
+  renderUserApprovalPanel();
+  toast(`已將使用者權限調整為：${roleLabel(nextRole)}`, 'ok');
 }
 
 function renderUserApprovalPanel() {
   const panel = $('userApprovalPanel');
   if (!panel) return;
-  if (!isSystemAdmin()) {
-    panel.innerHTML = '<div class="notice">此區僅最高系統管理員可查看。</div>';
+  if (!canManageUsers()) {
+    panel.innerHTML = '<div class="notice">此區僅最高系統管理員與系統管理員可查看。</div>';
     return;
   }
-  const sorted = [...users].sort((a, b) => {
-    const statusA = normEmail(a.email) === normEmail(ADMIN_EMAIL) ? 'approved' : (a.status || a.approvalStatus || 'pending');
-    const statusB = normEmail(b.email) === normEmail(ADMIN_EMAIL) ? 'approved' : (b.status || b.approvalStatus || 'pending');
+  const normalized = [...users];
+  if (!normalized.some(u => normEmail(u.email) === normEmail(ADMIN_EMAIL))) {
+    normalized.unshift({ uid: currentUser?.uid || 'system-admin', id: currentUser?.uid || 'system-admin', name: currentUser?.name || '最高系統管理員', email: ADMIN_EMAIL, role: 'systemAdmin', status: 'approved' });
+  }
+  const sorted = normalized.sort((a, b) => {
+    const statusA = userStatus(a);
+    const statusB = userStatus(b);
     const rank = (status) => status === 'pending' ? 0 : status === 'approved' ? 1 : 2;
     if (normEmail(a.email) === normEmail(ADMIN_EMAIL)) return -1;
     if (normEmail(b.email) === normEmail(ADMIN_EMAIL)) return 1;
     return rank(statusA) - rank(statusB) || safe(a.email).localeCompare(safe(b.email));
   });
-  const pendingCount = sorted.filter(u => normEmail(u.email) !== normEmail(ADMIN_EMAIL) && (u.status || u.approvalStatus || 'pending') === 'pending').length;
-  if (!sorted.length) {
-    panel.innerHTML = `<div class="approval-empty-box"><strong>目前沒有使用者資料</strong><span>新帳號第一次 Google 登入後，會自動出現在這裡等待核准。</span></div>`;
-    return;
-  }
-  panel.innerHTML = `<div class="approval-summary"><strong>待審核：${pendingCount} 人</strong><span>核准後才可使用系統；停用帳號將無法進入案件資料。</span></div>` + sorted.map(u => {
+  const pendingCount = sorted.filter(u => !isSystemAdmin(u) && userStatus(u) === 'pending').length;
+  const approvedCount = sorted.filter(u => !isSystemAdmin(u) && userStatus(u) === 'approved').length;
+  const adminCount = sorted.filter(u => !isSystemAdmin(u) && u.role === 'admin' && userStatus(u) === 'approved').length;
+  const suspendedCount = sorted.filter(u => !isSystemAdmin(u) && userStatus(u) !== 'pending' && userStatus(u) !== 'approved').length;
+  const totalCount = sorted.length;
+
+  panel.innerHTML = `<div class="approval-summary-grid">
+      <div><strong>${totalCount}</strong><span>註冊帳號</span></div>
+      <div><strong>${pendingCount}</strong><span>待審核</span></div>
+      <div><strong>${approvedCount}</strong><span>已核准使用中</span></div>
+      <div><strong>${adminCount}</strong><span>系統管理員</span></div>
+      <div><strong>${suspendedCount}</strong><span>已停用</span></div>
+    </div>
+    <div class="notice mt-3">帳號必須核准後才可進入系統。承辦人只能管理自己建立的案件；系統管理員可管理全部案件，但不能變更最高系統管理員。</div>` + sorted.map(u => {
     const uid = u.uid || u.id;
-    const status = normEmail(u.email) === normEmail(ADMIN_EMAIL) ? 'approved' : (u.status || u.approvalStatus || 'pending');
-    const badge = status === 'approved' ? '<span class="badge open">已核准</span>' : status === 'rejected' ? '<span class="badge closed">已停用</span>' : '<span class="badge draft">待審核</span>';
-    const actions = normEmail(u.email) === normEmail(ADMIN_EMAIL) ? '<span class="muted small">固定最高管理員</span>' : `
-      <button class="btn btn-secondary mini" data-approve-user="${uid}" ${status === 'approved' ? 'disabled' : ''}>核准</button>
-      <button class="btn btn-outline mini" data-reject-user="${uid}" ${status === 'rejected' ? 'disabled' : ''}>停用</button>`;
-    return `<div class="approval-row"><div><strong>${safe(u.name || u.email)}</strong><br><small class="muted">${safe(u.email)}｜${safe(uid)}</small></div><div>${badge}</div><div class="approval-actions">${actions}</div></div>`;
+    const status = userStatus(u);
+    const badge = status === 'approved' ? '<span class="badge open">已核准</span>' : status === 'rejected' || status === 'suspended' ? '<span class="badge closed">已停用</span>' : '<span class="badge draft">待審核</span>';
+    const fixedAdmin = isSystemAdmin(u);
+    const role = fixedAdmin ? 'systemAdmin' : (u.role || 'manager');
+    const roleControl = fixedAdmin ? '<span class="muted small">固定最高管理員</span>' : (canChangeUserRole() ? `
+      <select class="user-role-select" data-user-role="${uid}">
+        <option value="manager" ${role !== 'admin' ? 'selected' : ''}>承辦人</option>
+        <option value="admin" ${role === 'admin' ? 'selected' : ''}>系統管理員</option>
+      </select>` : `<span class="muted small">${roleLabel(role)}</span>`);
+    const actions = fixedAdmin ? '<span class="muted small">不可停用／不可變更</span>' : `
+      <button class="btn btn-secondary mini" data-approve-user="${uid}" ${status === 'approved' ? 'disabled' : ''}>核准／恢復</button>
+      <button class="btn btn-outline mini" data-reject-user="${uid}" ${status === 'rejected' || status === 'suspended' ? 'disabled' : ''}>停用</button>`;
+    return `<div class="approval-row v9-user-row"><div><strong>${safe(u.name || u.email)}</strong><br><small class="muted">${safe(u.email)}｜${safe(uid)}</small></div><div>${badge}<br><small class="muted">${roleLabel(role, u.email)}</small></div><div>${roleControl}</div><div class="approval-actions">${actions}</div></div>`;
   }).join('');
   panel.querySelectorAll('[data-approve-user]').forEach(btn => btn.addEventListener('click', () => updateUserApproval(btn.dataset.approveUser, 'approved')));
   panel.querySelectorAll('[data-reject-user]').forEach(btn => btn.addEventListener('click', () => updateUserApproval(btn.dataset.rejectUser, 'rejected')));
+  panel.querySelectorAll('[data-user-role]').forEach(sel => sel.addEventListener('change', () => updateUserRole(sel.dataset.userRole, sel.value)));
 }
 
 function renderEnvStatus() {
@@ -1591,10 +1679,10 @@ function renderPositionRules() {
 
 function seedDemoData(showToast = true) {
   const demoCase = {
-    id: 'case_demo_001', agencyName: '新北市政府消防局', title: '114年度進階搶救技術訓練報名', type: '訓練報名', audience: 'internal', status: 'open', deadline: todayISO(), quota: 30, parkingSlots: 5, attachmentLimitMB: 10, attachmentMode: 'optional', ageBucketMode: 'five', customAgeBuckets: '', note: '請報名人確認資料正確。', uploadMode: 'appsScript', uploadEndpoint: '', driveFolderName: '消防局報名系統附件', serialPrefix: 'NTP-FIRE', caseCode: 'TRAIN', createdByEmail: ADMIN_EMAIL, createdAtMillis: Date.now()
+    id: 'case_demo_001', agencyName: '新北市政府消防局', title: '114年度進階搶救技術訓練報名', type: '訓練報名', audience: 'internal', status: 'open', deadline: todayISO(), quota: 30, parkingSlots: 5, attachmentLimitMB: 10, attachmentMode: 'optional', ageBucketMode: 'five', customAgeBuckets: '', note: '請報名人確認資料正確。', uploadMode: 'appsScript', uploadEndpoint: '', driveFolderName: '消防局報名系統附件', serialPrefix: 'NTP-FIRE', caseCode: 'TRAIN', createdBy: 'system-admin', createdByEmail: ADMIN_EMAIL, createdByName: '最高系統管理員', createdAtMillis: Date.now()
   };
   const demoCase2 = {
-    id: 'case_demo_002', agencyName: '新北市政府消防局', title: '外部講習報名測試', type: '講習報名', audience: 'external', status: 'open', deadline: todayISO(), quota: 80, parkingSlots: 2, attachmentLimitMB: 10, attachmentMode: 'none', ageBucketMode: 'custom', customAgeBuckets: '18-24,25-29,30-34,35-39,40+', note: '外部人員不需填寫單位與職稱。', uploadMode: 'appsScript', uploadEndpoint: '', driveFolderName: '消防局報名系統附件', serialPrefix: 'NTP-FIRE', caseCode: 'LECTURE', createdByEmail: ADMIN_EMAIL, createdAtMillis: Date.now() - 1000
+    id: 'case_demo_002', agencyName: '新北市政府消防局', title: '外部講習報名測試', type: '講習報名', audience: 'external', status: 'open', deadline: todayISO(), quota: 80, parkingSlots: 2, attachmentLimitMB: 10, attachmentMode: 'none', ageBucketMode: 'custom', customAgeBuckets: '18-24,25-29,30-34,35-39,40+', note: '外部人員不需填寫單位與職稱。', uploadMode: 'appsScript', uploadEndpoint: '', driveFolderName: '消防局報名系統附件', serialPrefix: 'NTP-FIRE', caseCode: 'LECTURE', createdBy: 'system-admin', createdByEmail: ADMIN_EMAIL, createdByName: '最高系統管理員', createdAtMillis: Date.now() - 1000
   };
   const demoRegs = [
     { id:'reg_demo_1', caseId: demoCase.id, serialNo:'NTP-FIRE-TRAIN-20260520-A7K3', applicantName:'陳志遠', formData:{ applicantName:'陳志遠', phone:'0912-000-001', email:'chen@example.com', gender:'男', age:'33', unitGroup:'field', unit:'第三救災救護大隊', subUnit:'三重分隊', dutyType:'field', position:'小隊長', parkingNeed:'需要停車', parkingStatus:'正取第 1 車位', meal:'葷', note:'' }, submittedAtMillis:Date.now()-50000 },

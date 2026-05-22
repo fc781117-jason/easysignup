@@ -1,4 +1,4 @@
-# 消防局多功能報名系統 V8｜平台建置操作手冊
+# 消防局多功能報名系統 V9｜平台建置操作手冊
 
 ## 你需要記錄的資料清單
 
@@ -242,3 +242,16 @@
 ## V7 重要補充：Firestore Rules 必須同步更新
 
 V7 新增「使用者審核」與「案件建立者才可管理」機制，請務必到 Firebase Console → Firestore Database → Rules，貼上本資料夾內 `firestore.rules` 的完整內容並 Publish。若沒有更新 Rules，前端雖會限制操作，但資料庫層仍可能沿用舊權限。
+
+## V9 必做：更新 Firestore Rules
+
+每次更新到 V9 後，請務必同步更新 Firebase Console 的 Firestore Rules：
+
+1. 開啟 Firebase Console。
+2. 進入 Firestore Database。
+3. 點上方 Rules / 規則。
+4. 清空舊內容。
+5. 貼上本專案 `firestore.rules` 的完整內容。
+6. 點 Publish / 發布。
+
+未更新 Rules 時，前端雖然會限制畫面，但資料庫層仍可能沿用舊規則，造成未審核使用者或非承辦人仍可操作資料。
