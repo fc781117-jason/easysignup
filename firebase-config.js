@@ -12,14 +12,14 @@ window.APP_CONFIG = {
   // 正式部署後建議改為 false；V9 在 Firebase 正式模式下會自動隱藏 Demo 登入。
   allowDemoMode: true,
 
-  firebaseConfig: {
-    apiKey: 'PASTE_FIREBASE_API_KEY_HERE',
-    authDomain: 'PASTE_PROJECT_ID.firebaseapp.com',
-    projectId: 'PASTE_PROJECT_ID',
-    storageBucket: 'PASTE_PROJECT_ID.firebasestorage.app',
-    messagingSenderId: 'PASTE_MESSAGING_SENDER_ID',
-    appId: 'PASTE_FIREBASE_APP_ID'
-  },
+const firebaseConfig = {
+  apiKey: "AIzaSyC-MOTqAX2BMqKgOHGuyUAtSCFx-E5DCGI",
+  authDomain: "easysignup-59036.firebaseapp.com",
+  projectId: "easysignup-59036",
+  storageBucket: "easysignup-59036.firebasestorage.app",
+  messagingSenderId: "809543820672",
+  appId: "1:809543820672:web:bcb7eb1fba809f73ca8d65"
+};
 
   // Google Drive API 附件上傳使用。必須是「Web application」OAuth Client ID。
   googleOAuthClientId: 'PASTE_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com'
