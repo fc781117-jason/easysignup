@@ -10,9 +10,9 @@ window.APP_CONFIG = {
 
   // 是否允許尚未完成雲端設定時使用 localStorage Demo 模式。
   // 正式部署後建議改為 false；V9 在 Firebase 正式模式下會自動隱藏 Demo 登入。
-  allowDemoMode: true,
+  allowDemoMode: false,
 
-const firebaseConfig = {
+ firebaseConfig = {
   apiKey: "AIzaSyC-MOTqAX2BMqKgOHGuyUAtSCFx-E5DCGI",
   authDomain: "easysignup-59036.firebaseapp.com",
   projectId: "easysignup-59036",
@@ -22,5 +22,5 @@ const firebaseConfig = {
 };
 
   // Google Drive API 附件上傳使用。必須是「Web application」OAuth Client ID。
-  googleOAuthClientId: 'PASTE_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com'
+  googleOAuthClientId: '455193883848-l0b9ahhtn6ib6vqie83pga48aqe51ob4.apps.googleusercontent.com'
 };
