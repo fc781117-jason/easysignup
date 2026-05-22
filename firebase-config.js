@@ -12,7 +12,7 @@ window.APP_CONFIG = {
   // 正式部署後建議改為 false；V9 在 Firebase 正式模式下會自動隱藏 Demo 登入。
   allowDemoMode: false,
 
- firebaseConfig = {
+ firebaseConfig: {
   apiKey: "AIzaSyC-MOTqAX2BMqKgOHGuyUAtSCFx-E5DCGI",
   authDomain: "easysignup-59036.firebaseapp.com",
   projectId: "easysignup-59036",
